@@ -1,0 +1,19 @@
+# Xcode local state and build output
+xcuserdata/
+*.xcuserstate
+*.xcscmblueprint
+*.xccheckout
+build/
+DerivedData/
+.derivedData*/
+.build/
+
+# Packaged applications and symbols
+*.ipa
+*.xcarchive/
+*.dSYM/
+*.dSYM.zip
+
+# Local editor and OS files
+.DS_Store
+.vscode/
