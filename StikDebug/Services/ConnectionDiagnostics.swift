@@ -60,10 +60,7 @@ struct ConnectionDiagnosis: Equatable {
     var message: String {
         switch problem {
         case .pairingFile, .pairingRejected:
-            if #available(iOS 27.0, *) {
-                return String(localized: "Generate and place a new pairing file using Settings → Pair a Device in StikDebug.")
-            }
-            return String(localized: "Generate and place a new pairing file using iloader.")
+            return "Generate a Remote Pairing file for the target iPhone using a computer, then import it in Settings."
         case .invalidAddress:
             return String(localized: "Check Target Device IP in Settings. Enter an IPv4 address such as 10.7.0.1.")
         case .deviceLocked:

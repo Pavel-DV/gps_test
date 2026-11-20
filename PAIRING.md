@@ -1,6 +1,6 @@
 # Pairing Your Device
 
-StikDebug requires a specialized **pairing file** to communicate with your device remotely. This file is specific to your device and is required to use StikDebug. Without it, StikDebug will not work.
+StikDebug requires a specialized **pairing file** to communicate with your device remotely. This file is specific to the iPhone whose location you want to simulate and is required to use StikDebug. When controlling another iPhone, generate the Remote Pairing file for that target, export it to a file, and transfer it privately to the controller iPhone. Without it, StikDebug will not work.
 
 > [!WARNING]
 > Because of iOS/iPadOS limitations, resetting or changing your device's passcode will invalidate its pairing file. You will need to generate and place a new one.
@@ -34,4 +34,4 @@ This method uses [iloader](https://iloader.app) on a computer to generate the pa
 2. Click **Manage Pairing File**.
 3. Click **Place** beside **StikDebug** and any other apps you want to pair. A green **"Pairing file placed successfully!"** message should appear.
 
-If the file was placed directly in StikDebug, reopen the app and connect. If you exported it, transfer it privately to the iPhone and use **Settings → Import Pairing File**. This reduced build does not generate pairing files on-device.
+For two-phone operation, export the target iPhone's Remote Pairing file instead of placing it in an app on the target. Import it in StikDebug on the controller, enable Connect to Another iPhone, enter the target's IPv4 address and connect. For same-device operation, if the file was placed directly in StikDebug, reopen the app and connect. If you exported it, transfer it privately to the iPhone and use **Settings → Import Pairing File**. This reduced build does not generate pairing files on-device.

@@ -26,11 +26,15 @@ final class TunnelManager: ObservableObject {
         runOnMain {
             self.setConnectionNotice(nil)
             self.isConnected = false
+            MountingProgress.shared.reset()
         }
     }
 
     func restart() {
         runOnMain {
+            guard !MountingProgress.shared.isPreparing,
+                  !LocationSimulationSession.shared.preventsConnectionChanges else { return }
+            MountingProgress.shared.reset()
             self.setConnectionNotice(nil)
             self.isConnected = false
             if self.isStarting {
@@ -49,7 +53,9 @@ final class TunnelManager: ObservableObject {
             return
         }
 
-        guard !isStarting else { return }
+        guard !isStarting, !MountingProgress.shared.isPreparing,
+              !LocationSimulationSession.shared.preventsConnectionChanges else { return }
+        MountingProgress.shared.reset()
         let targetIP = DeviceConnectionContext.targetIPAddress
         let pairingFileURL = PairingFileStore.prepareURL()
         guard FileManager.default.fileExists(atPath: pairingFileURL.path) else {
@@ -141,7 +147,6 @@ final class TunnelManager: ObservableObject {
     }
 
     private func mountDeveloperDiskImageIfNeeded() {
-        guard DeveloperDiskImageService.filesAreReady else { return }
         MountingProgress.shared.pubMount()
     }
 

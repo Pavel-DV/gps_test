@@ -10,7 +10,7 @@ final class DeveloperDiskImageService {
     static let directoryURL = URL.documentsDirectory.appendingPathComponent("DDI", isDirectory: true)
 
     static var filesAreReady: Bool {
-        downloadItems.allSatisfy {
+        DeviceTunnelContext.shared.targetVersion != nil && downloadItems.allSatisfy {
             FileManager.default.fileExists(atPath: directoryURL.appendingPathComponent($0.fileName).path)
         } && UserDefaults.standard.string(forKey: mountMethodKey) == mountMethod.rawValue
     }
@@ -107,7 +107,8 @@ final class DeveloperDiskImageService {
     }
 
     private static var mountMethod: DDIMountMethod {
-        let version = ProcessInfo.processInfo.operatingSystemVersion
+        // The controller and target may run different iOS releases.
+        guard let version = DeviceTunnelContext.shared.targetVersion else { return .personalized }
         return version.majorVersion > 26 || (version.majorVersion == 26 && version.minorVersion >= 4)
             ? .cryptex
             : .personalized

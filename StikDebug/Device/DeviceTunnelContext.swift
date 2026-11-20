@@ -39,6 +39,7 @@ final class RemotePairingPortResolver {
     private var selectedLoopback = false
     private var resolvedPort: UInt16?
     private var finished = false
+    private var remoteConnections: [NWEndpoint: NWConnection] = [:]
 
     static func resolve(targetIPAddress: String = DeviceConnectionContext.targetIPAddress, timeout: TimeInterval = 5) -> UInt16 {
         let override = (UserDefaults.standard.string(forKey: overrideKey) ?? "")
@@ -59,7 +60,7 @@ final class RemotePairingPortResolver {
     static func discover(targetIPAddress: String = DeviceConnectionContext.targetIPAddress, timeout: TimeInterval = 5) -> (port: UInt16, source: String) {
         let worker = RemotePairingPortResolver()
         worker.discoveryQueue.async {
-            worker.startDiscovery()
+            worker.startDiscovery(targetIPAddress: targetIPAddress)
         }
         _ = worker.completion.wait(timeout: .now() + timeout)
         return worker.discoveryQueue.sync {
@@ -77,10 +78,14 @@ final class RemotePairingPortResolver {
         candidates.first(where: { $0.isLoopback }) ?? candidates.first
     }
 
-    private func startDiscovery() {
+    private func startDiscovery(targetIPAddress: String) {
         guard !finished else { return }
         let parameters = NWParameters.tcp
         parameters.includePeerToPeer = true
+        if targetIPAddress != DeviceConnectionContext.defaultTargetIPAddress,
+           let options = parameters.defaultProtocolStack.internetProtocol as? NWProtocolIP.Options {
+            options.version = .v4
+        }
         let browser = NWBrowser(
             for: .bonjour(type: "_remotepairing._tcp", domain: "local."),
             using: parameters
@@ -88,6 +93,25 @@ final class RemotePairingPortResolver {
         self.browser = browser
         browser.browseResultsChangedHandler = { [weak self] results, _ in
             guard let self, !self.finished else { return }
+            if targetIPAddress != DeviceConnectionContext.defaultTargetIPAddress {
+                // Accept a port only from the requested phone, never from a nearby device.
+                for result in results where self.remoteConnections[result.endpoint] == nil {
+                    let connection = NWConnection(to: result.endpoint, using: parameters)
+                    self.remoteConnections[result.endpoint] = connection
+                    let inspect = { [weak self, weak connection] in
+                        guard let self, let connection, !self.finished,
+                              case .hostPort(let host, let port) = connection.currentPath?.remoteEndpoint,
+                              case .ipv4(let address) = host,
+                              address == IPv4Address(targetIPAddress), port.rawValue != 0 else { return }
+                        self.resolvedPort = port.rawValue
+                        self.finishDiscovery()
+                    }
+                    connection.pathUpdateHandler = { _ in inspect() }
+                    connection.stateUpdateHandler = { _ in inspect() }
+                    connection.start(queue: self.discoveryQueue)
+                }
+                return
+            }
             let candidates = results.compactMap { result -> (endpoint: NWEndpoint, isLoopback: Bool)? in
                 guard case .service = result.endpoint else { return nil }
                 let isLoopback = result.interfaces.contains { $0.name.hasPrefix("lo") }
@@ -141,6 +165,8 @@ final class RemotePairingPortResolver {
         finished = true
         browser?.cancel()
         connection?.cancel()
+        remoteConnections.values.forEach { $0.cancel() }
+        remoteConnections.removeAll()
         completion.signal()
     }
 
@@ -167,6 +193,7 @@ final class DeviceTunnelContext {
 
     private var adapter: OpaquePointer?
     private var handshake: OpaquePointer?
+    private(set) var targetVersion: OperatingSystemVersion?
 
     private let tunnelLock = NSLock()
     private var tunnelConnecting = false
@@ -360,6 +387,17 @@ final class DeviceTunnelContext {
 
         adapter = newAdapter
         handshake = newHandshake
+        targetVersion = nil
+        do {
+            targetVersion = try readTargetVersion()
+        } catch {
+            if let handshake { rsd_handshake_free(handshake) }
+            if let adapter { adapter_free(adapter) }
+            handshake = nil
+            adapter = nil
+            finalError = error as NSError
+            throw error
+        }
     }
 
     func ensureTunnel() throws {

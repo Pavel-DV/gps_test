@@ -123,6 +123,34 @@ private enum IdeviceBridge {
 }
 
 extension DeviceTunnelContext {
+    func readTargetVersion() throws -> OperatingSystemVersion {
+        try IdeviceBridge.withTunnelHandles(for: self) { adapter, handshake in
+            try IdeviceBridge.withConnectedClient(
+                fallback: "Failed to connect to target lockdownd",
+                missingClientMessage: "Lockdownd client was not created",
+                connect: { lockdownd_connect_rsd(adapter, handshake, $0) },
+                cleanup: { lockdownd_client_free($0) }
+            ) { client in
+                var value: plist_t?
+                defer { plist_free(value) }
+                if let error = lockdownd_get_value(client, "ProductVersion", nil, &value) {
+                    throw IdeviceBridge.consumeFFIError(error, fallback: "Failed to read target iOS version")
+                }
+                guard let value,
+                      let string = IdeviceBridge.string(from: plist_get_string_ptr(value, nil)) else {
+                    throw IdeviceBridge.makeError(message: "Target iOS version was not returned")
+                }
+                let parts = string.split(separator: ".")
+                guard let first = parts.first, let major = Int(first), major > 0,
+                      parts.count >= 2, let minor = Int(parts[1]) else {
+                    throw IdeviceBridge.makeError(message: "Invalid target iOS version: \(string)")
+                }
+                return OperatingSystemVersion(majorVersion: major, minorVersion: minor,
+                                              patchVersion: parts.count > 2 ? Int(parts[2]) ?? 0 : 0)
+            }
+        }
+    }
+
     func isDeveloperDiskImageMounted() throws -> Bool {
         try IdeviceBridge.withTunnelHandles(for: self) { adapter, handshake in
             var cryptexQuerySucceeded = false
@@ -297,6 +325,7 @@ func simulate_location(_ deviceIP: String, _ latitude: Double, _ longitude: Doub
     }
 
     var address = sockaddr_in()
+    address.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
     address.sin_family = sa_family_t(AF_INET)
     address.sin_port = in_port_t(RemotePairingPortResolver.resolve(targetIPAddress: deviceIP)).bigEndian
 

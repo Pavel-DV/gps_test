@@ -725,6 +725,10 @@ final class LocationSearchCompleter: NSObject, ObservableObject, MKLocalSearchCo
 
 struct LocationSimulationView: View {
     @ObservedObject private var tunnel = TunnelManager.shared
+    @ObservedObject private var mounting = MountingProgress.shared
+    private var isReadyToSimulate: Bool {
+        tunnel.isConnected && !tunnel.isStarting && mounting.coolisMounted && !mounting.isPreparing
+    }
     @State private var showConnectedStatus = true
     @State private var locationConnectionNotice: String?
     @State private var connectionErrorMessage: String?
@@ -1288,7 +1292,7 @@ struct LocationSimulationView: View {
 
                 Button("Simulate Location", action: simulate)
                     .buttonStyle(.borderedProminent)
-                    .disabled(!pairingExists || isBusy || isLoadingRoute)
+                    .disabled(!pairingExists || !isReadyToSimulate || isBusy || isLoadingRoute)
 
                 Button {
                     showSaveBookmark = true
@@ -1333,6 +1337,7 @@ struct LocationSimulationView: View {
                     .buttonStyle(.borderedProminent)
                     .disabled(
                         !pairingExists ||
+                        !isReadyToSimulate ||
                         isBusy ||
                         isLoadingRoute ||
                         isPrefetchingRouteSpeeds ||
@@ -1348,7 +1353,7 @@ struct LocationSimulationView: View {
     }
 
     private func simulate() {
-        guard pairingExists, let coord = coordinate, !isBusy else { return }
+        guard pairingExists, isReadyToSimulate, let coord = coordinate, !isBusy else { return }
         runLocationCommand(
             errorTitle: "Simulation Failed",
             errorMessage: { code in
@@ -1364,7 +1369,7 @@ struct LocationSimulationView: View {
     }
 
     private func simulateRoute() {
-        guard pairingExists,
+        guard pairingExists, isReadyToSimulate,
               let routePlan,
               let firstCoordinate = routePlaybackSamples.first?.coordinate,
               !isBusy else {
@@ -1397,10 +1402,12 @@ struct LocationSimulationView: View {
         onSuccess: @escaping () -> Void
     ) {
         isBusy = true
+        simulationSession.isSendingCommand = true
         LocationSimulationCommandQueue.shared.async {
             let code = operation()
             DispatchQueue.main.async {
                 isBusy = false
+                simulationSession.isSendingCommand = false
                 if code == 0 {
                     connectionErrorMessage = nil
                     onSuccess()

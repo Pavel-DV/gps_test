@@ -11,10 +11,10 @@ struct LocationRootView: View {
                 .toolbar {
                     ToolbarItem(placement: .bottomBar) {
                         Button("Settings", systemImage: "gearshape") { showSettings = true }
-                            .disabled(simulation.isActive)
+                            .disabled(simulation.preventsConnectionChanges)
                     }
                     ToolbarItem(placement: .bottomBar) {
-                        Text(mounting.coolisMounted ? "DDI mounted" : "DDI not mounted")
+                        Text(mounting.isPreparing ? "Preparing DDI" : (mounting.coolisMounted ? "DDI mounted" : "DDI not mounted"))
                             .font(.caption)
                     }
                 }

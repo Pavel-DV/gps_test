@@ -6,6 +6,8 @@ final class LocationSimulationSession: ObservableObject {
     static let shared = LocationSimulationSession()
 
     @Published private(set) var isActive = false
+    @Published var isSendingCommand = false
+    var preventsConnectionChanges: Bool { isActive || isSendingCommand }
     @Published private(set) var coordinate: CLLocationCoordinate2D?
     @Published private(set) var routeCoordinates: [CLLocationCoordinate2D]?
     private var resendTimer: Timer?
