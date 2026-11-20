@@ -315,6 +315,9 @@ enum LocationSimulationCommandQueue {
 }
 
 func simulate_location(_ deviceIP: String, _ latitude: Double, _ longitude: Double, _ pairingFile: String) -> Int32 {
+    guard DeviceConnectionContext.validationMessage(for: deviceIP) == nil else {
+        return LocationSimulationStatus.invalidIP
+    }
     if let locationSimulation = LocationSimulationState.locationSimulation {
         if let ffiError = location_simulation_set(locationSimulation, latitude, longitude) {
             idevice_error_free(ffiError)
@@ -402,9 +405,6 @@ func simulate_location(_ deviceIP: String, _ latitude: Double, _ longitude: Doub
         return LocationSimulationStatus.locationSet
     }
 
-    let conditions = deviceIP == DeviceConnectionContext.defaultTargetIPAddress ? ConnectionDiagnostics.networkConditions() : nil
-    let notice = ConnectionDiagnostics.connectedNotice(targetIP: deviceIP, conditions: conditions)
-    NotificationCenter.default.post(name: .locationTunnelConnected, object: notice)
     return LocationSimulationStatus.ok
 }
 

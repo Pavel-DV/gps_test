@@ -16,6 +16,15 @@ jobs:
       - uses: maxim-lobanov/setup-xcode@v1
         with:
           xcode-version: '27.2'
+      - name: Test remote connection validation and diagnostics
+        run: |
+          mkdir -p build
+          MACOSX_DEPLOYMENT_TARGET=14.0 swiftc -parse-as-library \
+            StikDebug/Device/DeviceConnectionContext.swift \
+            StikDebug/Services/ConnectionDiagnostics.swift \
+            Tests/RemoteConnectionTests.swift \
+            -o build/remote-connection-tests
+          build/remote-connection-tests
       - name: Build unsigned archive
         run: |
           xcodebuild clean archive \

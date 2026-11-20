@@ -34,9 +34,6 @@ final class RemotePairingPortResolver {
     private let discoveryQueue = DispatchQueue(label: "com.stik.remotePairingDiscovery")
     private let completion = DispatchSemaphore(value: 0)
     private var browser: NWBrowser?
-    private var connection: NWConnection?
-    private var selectedService: NWEndpoint?
-    private var selectedLoopback = false
     private var resolvedPort: UInt16?
     private var finished = false
     private var remoteConnections: [NWEndpoint: NWConnection] = [:]
@@ -72,18 +69,11 @@ final class RemotePairingPortResolver {
         }
     }
 
-    private static func preferredCandidate(
-        from candidates: [(endpoint: NWEndpoint, isLoopback: Bool)]
-    ) -> (endpoint: NWEndpoint, isLoopback: Bool)? {
-        candidates.first(where: { $0.isLoopback }) ?? candidates.first
-    }
-
     private func startDiscovery(targetIPAddress: String) {
         guard !finished else { return }
         let parameters = NWParameters.tcp
         parameters.includePeerToPeer = true
-        if targetIPAddress != DeviceConnectionContext.defaultTargetIPAddress,
-           let options = parameters.defaultProtocolStack.internetProtocol as? NWProtocolIP.Options {
+        if let options = parameters.defaultProtocolStack.internetProtocol as? NWProtocolIP.Options {
             options.version = .v4
         }
         let browser = NWBrowser(
@@ -93,57 +83,22 @@ final class RemotePairingPortResolver {
         self.browser = browser
         browser.browseResultsChangedHandler = { [weak self] results, _ in
             guard let self, !self.finished else { return }
-            if targetIPAddress != DeviceConnectionContext.defaultTargetIPAddress {
-                // Accept a port only from the requested phone, never from a nearby device.
-                for result in results where self.remoteConnections[result.endpoint] == nil {
-                    let connection = NWConnection(to: result.endpoint, using: parameters)
-                    self.remoteConnections[result.endpoint] = connection
-                    let inspect = { [weak self, weak connection] in
-                        guard let self, let connection, !self.finished,
-                              case .hostPort(let host, let port) = connection.currentPath?.remoteEndpoint,
-                              case .ipv4(let address) = host,
-                              address == IPv4Address(targetIPAddress), port.rawValue != 0 else { return }
-                        self.resolvedPort = port.rawValue
-                        self.finishDiscovery()
-                    }
-                    connection.pathUpdateHandler = { _ in inspect() }
-                    connection.stateUpdateHandler = { _ in inspect() }
-                    connection.start(queue: self.discoveryQueue)
-                }
-                return
-            }
-            let candidates = results.compactMap { result -> (endpoint: NWEndpoint, isLoopback: Bool)? in
-                guard case .service = result.endpoint else { return nil }
-                let isLoopback = result.interfaces.contains { $0.name.hasPrefix("lo") }
-                return (result.endpoint, isLoopback)
-            }
-            guard let selected = Self.preferredCandidate(from: candidates),
-                  self.selectedService == nil || (!self.selectedLoopback && selected.isLoopback) else {
-                return
-            }
-            self.selectedService = selected.endpoint
-            self.selectedLoopback = selected.isLoopback
-            self.connection?.cancel()
-            let connection = NWConnection(to: selected.endpoint, using: parameters)
-            self.connection = connection
-            connection.pathUpdateHandler = { [weak self, weak connection] path in
-                guard let self, let connection, self.connection === connection, !self.finished else { return }
-                if path.status == .satisfied {
-                    self.recordResolvedPort(from: connection)
-                }
-            }
-            connection.stateUpdateHandler = { [weak self, weak connection] state in
-                guard let self, let connection, self.connection === connection, !self.finished else { return }
-                switch state {
-                case .ready, .waiting:
-                    self.recordResolvedPort(from: connection)
-                case .failed:
+            // Accept a port only from the requested phone, never from a nearby device.
+            for result in results where self.remoteConnections[result.endpoint] == nil {
+                let connection = NWConnection(to: result.endpoint, using: parameters)
+                self.remoteConnections[result.endpoint] = connection
+                let inspect = { [weak self, weak connection] in
+                    guard let self, let connection, !self.finished,
+                          case .hostPort(let host, let port) = connection.currentPath?.remoteEndpoint,
+                          case .ipv4(let address) = host,
+                          address == IPv4Address(targetIPAddress), port.rawValue != 0 else { return }
+                    self.resolvedPort = port.rawValue
                     self.finishDiscovery()
-                default:
-                    break
                 }
+                connection.pathUpdateHandler = { _ in inspect() }
+                connection.stateUpdateHandler = { _ in inspect() }
+                connection.start(queue: self.discoveryQueue)
             }
-            connection.start(queue: self.discoveryQueue)
         }
         browser.stateUpdateHandler = { [weak self] state in
             if case .failed = state {
@@ -153,18 +108,10 @@ final class RemotePairingPortResolver {
         browser.start(queue: discoveryQueue)
     }
 
-    private func recordResolvedPort(from connection: NWConnection) {
-        guard case .hostPort(_, let port) = connection.currentPath?.remoteEndpoint,
-              port.rawValue != 0 else { return }
-        resolvedPort = port.rawValue
-        finishDiscovery()
-    }
-
     private func finishDiscovery() {
         guard !finished else { return }
         finished = true
         browser?.cancel()
-        connection?.cancel()
         remoteConnections.values.forEach { $0.cancel() }
         remoteConnections.removeAll()
         completion.signal()
@@ -271,6 +218,9 @@ final class DeviceTunnelContext {
 
     private func createTunnel(hostname: String) throws -> TunnelHandles {
         let deviceIP = DeviceConnectionContext.targetIPAddress
+        if let message = DeviceConnectionContext.validationMessage(for: deviceIP) {
+            throw ConnectionDiagnostics.annotate(makeError(message, code: -18), stage: .targetAddress, targetIP: deviceIP)
+        }
         let pairingFile: OpaquePointer
         do {
             pairingFile = try getPairingFile()

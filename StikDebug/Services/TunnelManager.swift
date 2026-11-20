@@ -1,8 +1,3 @@
-//
-//  TunnelManager.swift
-//  StikDebug
-//
-
 import Foundation
 import Combine
 import UIKit
@@ -11,208 +6,69 @@ final class TunnelManager: ObservableObject {
     static let shared = TunnelManager()
 
     @Published private(set) var isConnected = false
-
     @Published private(set) var isStarting = false
     @Published private(set) var lastError: NSError?
     @Published private(set) var lastDiagnosis: ConnectionDiagnosis?
-    @Published private(set) var connectionNotice: String?
-    private var noticeDismissal: DispatchWorkItem?
-    private var restartPending = false
-    private var isRefreshingDiagnosis = false
+    @Published private(set) var connectionTarget: String?
 
     private init() {}
 
     func markDisconnected() {
-        runOnMain {
-            self.setConnectionNotice(nil)
-            self.isConnected = false
-            MountingProgress.shared.reset()
-        }
-    }
-
-    func restart() {
-        runOnMain {
-            guard !MountingProgress.shared.isPreparing,
-                  !LocationSimulationSession.shared.preventsConnectionChanges else { return }
-            MountingProgress.shared.reset()
-            self.setConnectionNotice(nil)
-            self.isConnected = false
-            if self.isStarting {
-                self.restartPending = true
-            } else {
-                self.start()
-            }
-        }
-    }
-
-    func start(showErrorUI: Bool = true) {
-        guard Thread.isMainThread else {
-            DispatchQueue.main.async {
-                self.start(showErrorUI: showErrorUI)
-            }
-            return
-        }
-
+        precondition(Thread.isMainThread)
         guard !isStarting, !MountingProgress.shared.isPreparing,
               !LocationSimulationSession.shared.preventsConnectionChanges else { return }
-        MountingProgress.shared.reset()
-        let targetIP = DeviceConnectionContext.targetIPAddress
-        let pairingFileURL = PairingFileStore.prepareURL()
-        guard FileManager.default.fileExists(atPath: pairingFileURL.path) else {
-            let error = ConnectionDiagnostics.annotate(NSError(domain: "StikDebug", code: -17, userInfo: [NSLocalizedDescriptionKey: "Pairing file not found."]), stage: .pairingFile, targetIP: targetIP)
-            finishStart(.failure(error), diagnosis: ConnectionDiagnosis(problem: .pairingFile, isLocal: targetIP == DeviceConnectionContext.defaultTargetIPAddress), showErrorUI: showErrorUI)
-            return
-        }
-
+        isConnected = false
+        connectionTarget = nil
         lastError = nil
         lastDiagnosis = nil
-        setConnectionNotice(nil)
-        isConnected = false
-        isStarting = true
-
-        DispatchQueue.global(qos: .userInteractive).async { [showErrorUI] in
-            let result: Result<Void, NSError>
-            let diagnosis: ConnectionDiagnosis?
-            let notice: String?
-            do {
-                try DeviceTunnelContext.shared.startTunnel()
-                result = .success(())
-                diagnosis = nil
-                let conditions = targetIP == DeviceConnectionContext.defaultTargetIPAddress ? ConnectionDiagnostics.networkConditions() : nil
-                notice = ConnectionDiagnostics.connectedNotice(targetIP: targetIP, conditions: conditions)
-            } catch {
-                result = .failure(error as NSError)
-                diagnosis = ConnectionDiagnostics.diagnose(error as NSError, targetIP: targetIP)
-                notice = nil
-            }
-
-            DispatchQueue.main.async {
-                self.finishStart(result, diagnosis: diagnosis, notice: notice, showErrorUI: showErrorUI)
-            }
-        }
+        MountingProgress.shared.reset()
     }
 
-    func refreshDiagnosis() {
-        guard !isStarting, !isConnected, !isRefreshingDiagnosis,
-              let error = lastError, lastDiagnosis?.isLocal == true else { return }
+    func start() {
+        precondition(Thread.isMainThread)
+        guard !isStarting, !MountingProgress.shared.isPreparing,
+              !LocationSimulationSession.shared.preventsConnectionChanges else { return }
+        markDisconnected()
         let targetIP = DeviceConnectionContext.targetIPAddress
-        guard targetIP == DeviceConnectionContext.defaultTargetIPAddress else { return }
-        isRefreshingDiagnosis = true
-        DispatchQueue.global(qos: .userInitiated).async {
-            let diagnosis = ConnectionDiagnostics.diagnose(error, targetIP: targetIP)
-            DispatchQueue.main.async {
-                self.isRefreshingDiagnosis = false
-                guard !self.isStarting, !self.isConnected, self.lastError === error,
-                      DeviceConnectionContext.targetIPAddress == targetIP else { return }
-                self.lastDiagnosis = diagnosis
-            }
-        }
-    }
-
-    private func finishStart(_ result: Result<Void, NSError>, diagnosis: ConnectionDiagnosis?, notice: String? = nil, showErrorUI: Bool) {
-        isStarting = false
-        if restartPending {
-            restartPending = false
-            start()
+        connectionTarget = targetIP.isEmpty ? nil : targetIP
+        if let message = DeviceConnectionContext.validationMessage(for: targetIP) {
+            finishStart(.failure(ConnectionDiagnostics.annotate(
+                NSError(domain: "StikDebug", code: -18, userInfo: [NSLocalizedDescriptionKey: message]),
+                stage: .targetAddress, targetIP: targetIP)), targetIP: targetIP)
             return
         }
+        guard FileManager.default.fileExists(atPath: PairingFileStore.prepareURL().path) else {
+            finishStart(.failure(ConnectionDiagnostics.annotate(
+                NSError(domain: "StikDebug", code: -17, userInfo: [NSLocalizedDescriptionKey: "Import the remote iPhone's Remote Pairing file."]),
+                stage: .pairingFile, targetIP: targetIP)), targetIP: targetIP)
+            return
+        }
+        isStarting = true
+        DispatchQueue.global(qos: .userInitiated).async {
+            let result = Result { try DeviceTunnelContext.shared.startTunnel() }
+            DispatchQueue.main.async {
+                self.finishStart(result, targetIP: targetIP)
+            }
+        }
+    }
 
+    private func finishStart(_ result: Result<Void, Error>, targetIP: String) {
+        isStarting = false
         switch result {
         case .success:
             lastError = nil
             lastDiagnosis = nil
             isConnected = true
-            setConnectionNotice(notice)
-            LogManager.shared.addInfoLog("Tunnel connected successfully")
-            mountDeveloperDiskImageIfNeeded()
+            LogManager.shared.addInfoLog("Connected to remote iPhone at \(targetIP)")
+            MountingProgress.shared.pubMount()
         case .failure(let error):
-            setConnectionNotice(nil)
-            lastDiagnosis = diagnosis
+            let error = error as NSError
+            lastDiagnosis = ConnectionDiagnostics.diagnose(error, targetIP: targetIP)
             lastError = error
             isConnected = false
-            handleStartFailure(error, showErrorUI: showErrorUI)
+            LogManager.shared.addErrorLog("Remote connection to \(targetIP) failed: \(error.localizedDescription) (code \(error.code))")
         }
     }
-
-    private func setConnectionNotice(_ notice: String?) {
-        noticeDismissal?.cancel()
-        noticeDismissal = nil
-        connectionNotice = notice
-        guard notice != nil else { return }
-        let dismissal = DispatchWorkItem { [weak self] in
-            self?.connectionNotice = nil
-        }
-        noticeDismissal = dismissal
-        DispatchQueue.main.asyncAfter(deadline: .now() + 8, execute: dismissal)
-    }
-
-    private func mountDeveloperDiskImageIfNeeded() {
-        MountingProgress.shared.pubMount()
-    }
-
-    private func handleStartFailure(_ error: NSError, showErrorUI: Bool) {
-        LogManager.shared.addErrorLog(tunnelConnectionLogMessage(for: error))
-        guard showErrorUI else {
-            return
-        }
-
-        if lastDiagnosis?.problem == .pairingRejected {
-            handleInvalidPairingFile(error)
-            return
-        }
-
-        showAlert(
-            title: "Connection Error".localized,
-            message: tunnelConnectionAlertMessage(for: error, diagnosis: lastDiagnosis),
-            showOk: false,
-            showTryAgain: true
-        ) { shouldTryAgain in
-            if shouldTryAgain {
-                startTunnelInBackground()
-            }
-        }
-    }
-
-    private func handleInvalidPairingFile(_ error: NSError) {
-        LogManager.shared.addInfoLog("Pairing file reported invalid; keeping existing file")
-
-        showAlert(
-            title: "Invalid Pairing File".localized,
-            message: tunnelConnectionAlertMessage(for: error, diagnosis: lastDiagnosis),
-            showOk: true,
-            showTryAgain: false,
-            primaryButtonText: String(localized: "Select New File")
-        ) { _ in
-            NotificationCenter.default.post(name: NSNotification.Name("ShowPairingFilePicker"), object: nil)
-        }
-    }
-
-    private func runOnMain(_ work: @escaping () -> Void) {
-        if Thread.isMainThread {
-            work()
-        } else {
-            DispatchQueue.main.async(execute: work)
-        }
-    }
-}
-
-func startTunnelInBackground(showErrorUI: Bool = true) {
-    TunnelManager.shared.start(showErrorUI: showErrorUI)
-}
-
-private func tunnelConnectionLogMessage(for error: NSError) -> String {
-    let target = RemotePairingPortResolver.lastAttemptDescription
-    return "Tunnel connection failed for \(target): \(error.localizedDescription) (Domain: \(error.domain), Code: \(error.code), Raw: \(String(describing: error)))"
-}
-
-private func tunnelConnectionAlertMessage(for error: NSError, diagnosis: ConnectionDiagnosis?) -> String {
-    let summary = diagnosis.map { "\($0.title)\n\($0.message)" } ?? "Unlock the target device and try again."
-    let detail = diagnosis?.hasSimpleError == true ? "" : "\n\nCode \(error.code): \(error.localizedDescription)"
-    return """
-    \(summary)\(detail)
-
-    \(connectionDiagnosticDetails())
-    """
 }
 
 func connectionDiagnosticDetails() -> String {

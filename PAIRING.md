@@ -28,10 +28,12 @@ This method uses [iloader](https://iloader.app) on a computer to generate the pa
 1. Install `usbmuxd` using your package manager if it is not already installed.
 2. Download and install iloader for your distribution: [Debian/Ubuntu](https://github.com/nab138/iloader/releases/latest/download/iloader-linux-amd64.deb), [Fedora/openSUSE](https://github.com/nab138/iloader/releases/latest/download/iloader-linux-x86_64.rpm), or [AppImage for other distributions](https://github.com/nab138/iloader/releases/latest/download/iloader-linux-amd64.AppImage).
 
-### Generating and placing the pairing file
+### Exporting the remote iPhone's pairing file
 
-1. For best results, connect your device to your computer using a USB cable. If your device appears wirelessly in iloader, that should work too.
-2. Click **Manage Pairing File**.
-3. Click **Place** beside **StikDebug** and any other apps you want to pair. A green **"Pairing file placed successfully!"** message should appear.
+1. Connect the **remote iPhone** to the computer, unlock it, and trust the computer if prompted.
+2. Use the pairing tool to export that iPhone's **Remote Pairing** file. Do not use an ordinary lockdown pairing record.
+3. Transfer the exported file privately to the controller iPhone.
+4. Open StikDebug's **Remote iPhone** settings. Enter the remote iPhone's Wi-Fi IPv4 address, then tap **Import Pairing File** and select the exported file.
+5. Review the address and file, then tap **Connect to Remote iPhone**. Importing a file does not connect automatically.
 
-For two-phone operation, export the target iPhone's Remote Pairing file instead of placing it in an app on the target. Import it in StikDebug on the controller, enable Connect to Another iPhone, enter the target's IPv4 address and connect. For same-device operation, if the file was placed directly in StikDebug, reopen the app and connect. If you exported it, transfer it privately to the iPhone and use **Settings → Import Pairing File**. This reduced build does not generate pairing files on-device.
+The file must match the remote iPhone, not the controller. The app cannot validate pairing credentials against the remote phone until you explicitly connect. A TCP connection reset is a transport failure, not proof of a rejected pairing record. If the remote phone explicitly rejects authentication, check that its address and exported file refer to the same phone.

@@ -5,7 +5,7 @@
 	<key>CFBundleURLTypes</key>
 	<array><dict><key>CFBundleURLSchemes</key><array><string>stikdebug</string></array></dict></array>
 	<key>NSLocalNetworkUsageDescription</key>
-	<string>StikDebug connects to a paired iPhone on your local network, or this iPhone through a loopback VPN, to simulate its location.</string>
+	<string>StikDebug connects to your paired remote iPhone on the local network to simulate its location.</string>
 	<key>NSBonjourServices</key>
 	<array>
 		<string>_remotepairing._tcp</string>
@@ -13,7 +13,6 @@
 	<key>UIBackgroundModes</key>
 	<array>
 		<string>audio</string>
-		<string>location</string>
 	</array>
 	<key>UIFileSharingEnabled</key>
 	<true/>

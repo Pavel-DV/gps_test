@@ -730,14 +730,13 @@ struct LocationSimulationView: View {
         tunnel.isConnected && !tunnel.isStarting && mounting.coolisMounted && !mounting.isPreparing
     }
     @State private var showConnectedStatus = true
-    @State private var locationConnectionNotice: String?
     @State private var connectionErrorMessage: String?
     private var isDeviceConnected: Bool {
         tunnel.isConnected && !tunnel.isStarting && tunnel.lastError == nil && connectionErrorMessage == nil
     }
     @ObservedObject private var simulationSession = LocationSimulationSession.shared
     @State private var coordinate: CLLocationCoordinate2D?
-    @State private var position: MapCameraPosition = .userLocation(fallback: .automatic)
+    @State private var position: MapCameraPosition = .automatic
 
     @State private var backgroundTaskID: UIBackgroundTaskIdentifier = .invalid
     @State private var routeLoadTask: Task<Void, Never>?
@@ -968,17 +967,8 @@ struct LocationSimulationView: View {
             }
         }
         .safeAreaInset(edge: .top) {
-            if locationConnectionNotice != nil || !isDeviceConnected || showConnectedStatus || tunnel.connectionNotice != nil {
-                Group {
-                    if let notice = locationConnectionNotice {
-                        Label(notice, systemImage: "airplane")
-                            .font(.subheadline)
-                            .foregroundStyle(.green)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                    } else {
-                        DeviceConnectionStatusView(errorMessage: connectionErrorMessage)
-                    }
-                }
+            if !isDeviceConnected || showConnectedStatus || mounting.isPreparing || mounting.lastError != nil {
+                DeviceConnectionStatusView(errorMessage: connectionErrorMessage)
                     .padding(12)
                     .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
                     .padding(.horizontal)
@@ -992,15 +982,7 @@ struct LocationSimulationView: View {
                 showConnectedStatus = false
             } catch {}
         }
-        .onReceive(NotificationCenter.default.publisher(for: .locationTunnelConnected).receive(on: DispatchQueue.main)) { notification in
-            locationConnectionNotice = notification.object as? String
-        }
-        .task(id: locationConnectionNotice) {
-            guard locationConnectionNotice != nil else { return }
-            try? await Task.sleep(for: .seconds(8))
-            guard !Task.isCancelled else { return }
-            locationConnectionNotice = nil
-        }
+
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItemGroup(placement: .topBarLeading) {
@@ -1096,7 +1078,6 @@ struct LocationSimulationView: View {
             }
         }
         .onDisappear {
-            locationConnectionNotice = nil
             routeLoadTask?.cancel()
             routeLoadTask = nil
             routeSpeedPrefetchTask?.cancel()
@@ -1415,7 +1396,6 @@ struct LocationSimulationView: View {
                     alertTitle = errorTitle
                     alertMessage = errorMessage(code)
                     connectionErrorMessage = "Code \(code): \(alertMessage)"
-                    locationConnectionNotice = nil
                     showAlert = true
                 }
             }
@@ -1438,7 +1418,6 @@ struct LocationSimulationView: View {
         ) {
             endBackgroundTask()
             LocationSimulationSession.shared.stop()
-            locationConnectionNotice = nil
         }
     }
 
@@ -1617,7 +1596,6 @@ struct LocationSimulationView: View {
                         alertTitle = "Route Simulation Failed"
                         alertMessage = "Could not continue route simulation (error \(code))."
                         connectionErrorMessage = "Code \(code): Could not continue route simulation."
-                        locationConnectionNotice = nil
                         showAlert = true
                     }
                     return

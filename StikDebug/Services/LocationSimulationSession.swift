@@ -20,7 +20,6 @@ final class LocationSimulationSession: ObservableObject {
         if !isActive {
             isActive = true
             BackgroundAudioManager.shared.requestStart()
-            BackgroundLocationManager.shared.requestStart()
         }
     }
 
@@ -65,6 +64,5 @@ final class LocationSimulationSession: ObservableObject {
         isActive = false
         coordinate = nil
         BackgroundAudioManager.shared.requestStop()
-        BackgroundLocationManager.shared.requestStop()
     }
 }

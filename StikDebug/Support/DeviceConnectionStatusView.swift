@@ -3,36 +3,23 @@ import UIKit
 
 struct DeviceConnectionStatusView: View {
     @ObservedObject private var tunnel = TunnelManager.shared
+    @ObservedObject private var mounting = MountingProgress.shared
     @State private var didCopy = false
     var errorMessage: String?
 
-    private var isWorking: Bool { tunnel.isStarting }
-
+    private var isWorking: Bool { tunnel.isStarting || mounting.isPreparing }
     private var errorDetail: String? {
-        tunnel.lastError.map { "Code \($0.code): \($0.localizedDescription)" } ?? errorMessage
+        tunnel.lastError.map { "Code \($0.code): \($0.localizedDescription)" }
+            ?? mounting.lastError ?? errorMessage
     }
-
-    private var diagnosis: ConnectionDiagnosis? {
-        tunnel.lastError == nil ? nil : tunnel.lastDiagnosis
-    }
-
+    private var diagnosis: ConnectionDiagnosis? { tunnel.lastDiagnosis }
     private var title: String {
-        if tunnel.isStarting { return String(localized: "Connecting…") }
+        if tunnel.isStarting { return "Connecting to remote iPhone..." }
+        if mounting.isPreparing { return "Preparing remote Developer Disk Image..." }
         if let diagnosis { return diagnosis.title }
-        if !tunnel.isConnected { return String(localized: "Device not connected") }
-        if errorMessage != nil { return String(localized: "Connection error") }
-        return String(localized: "Device connected")
-    }
-
-    private var diagnosisSummary: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text(title)
-            if !isWorking, let diagnosis {
-                Text(diagnosis.message)
-                    .font(.subheadline)
-            }
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
+        if errorDetail != nil { return "Remote iPhone needs attention" }
+        if !tunnel.isConnected { return "Remote iPhone not connected" }
+        return mounting.coolisMounted ? "Remote iPhone ready" : "Remote iPhone connected"
     }
 
     var body: some View {
@@ -40,39 +27,27 @@ struct DeviceConnectionStatusView: View {
             if isWorking {
                 ProgressView()
             } else {
-                Image(systemName: diagnosis?.systemImage ?? (tunnel.isConnected && errorMessage == nil ? "checkmark.circle" : "exclamationmark.circle"))
-                    .foregroundStyle(tunnel.isConnected && errorMessage == nil ? .green : .orange)
+                Image(systemName: diagnosis?.systemImage ?? (tunnel.isConnected && errorDetail == nil ? "checkmark.circle" : "exclamationmark.circle"))
+                    .foregroundStyle(tunnel.isConnected && errorDetail == nil ? .green : .orange)
             }
             VStack(alignment: .leading, spacing: 4) {
-                diagnosisSummary
-                if !isWorking, diagnosis?.canConnectVPN == true {
-                    Button(action: connectLocalDevVPN) {
-                        Text("Tap here to connect the VPN")
-                            .font(.subheadline)
-                            .foregroundStyle(.tint)
-                            .multilineTextAlignment(.leading)
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
-                    .buttonStyle(.borderless)
-                    .accessibilityHint("Opens LocalDevVPN")
+                Text(title)
+                if let target = tunnel.connectionTarget {
+                    Text("Remote iPhone: \(target)")
+                        .font(.caption.monospaced()).textSelection(.enabled)
                 }
-                if !isWorking, tunnel.isConnected, errorMessage == nil, let notice = tunnel.connectionNotice {
-                    Text(notice)
-                        .font(.subheadline)
+                if !isWorking, let diagnosis {
+                    Text(diagnosis.message).font(.subheadline)
                 }
-                if !isWorking, diagnosis?.hasSimpleError != true, let detail = errorDetail {
-                    Text(detail)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .textSelection(.enabled)
+                if !isWorking, let detail = errorDetail {
+                    Text(detail).font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
                 }
             }
-            Spacer(minLength: 0)
+            .frame(maxWidth: .infinity, alignment: .leading)
             if !isWorking, let detail = errorDetail {
                 Button {
-                    let diagnostics = connectionDiagnosticDetails().components(separatedBy: "\n").joined(separator: ", ")
-                    let detected = diagnosis?.detectedSummary.map { "Detected: \($0)\n" } ?? ""
-                    UIPasteboard.general.string = "StikDebug error:\n\(detail)\n\(detected)v\(diagnostics)"
+                    let target = tunnel.connectionTarget ?? "Not selected"
+                    UIPasteboard.general.string = "Remote iPhone: \(target)\n\(detail)\nController diagnostics:\n\(connectionDiagnosticDetails())"
                     didCopy = true
                 } label: {
                     Image(systemName: didCopy ? "checkmark" : "doc.on.doc")
@@ -87,9 +62,6 @@ struct DeviceConnectionStatusView: View {
                     didCopy = false
                 }
             }
-        }
-        .onReceive(NotificationCenter.default.publisher(for: UIApplication.didBecomeActiveNotification)) { _ in
-            tunnel.refreshDiagnosis()
         }
         .onChange(of: errorDetail) { _, _ in didCopy = false }
     }

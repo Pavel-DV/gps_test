@@ -10,23 +10,25 @@ import UIKit
 enum AppBootstrapper {
     static func configure() {
         IdeviceLogFileManager.shared.prepareForLogging()
+        removeLegacyConnectionSettings()
         registerDefaultSettings()
-        ensureKeepAliveSelection()
         applyDocumentPickerCopyWorkaround()
+    }
+
+    private static func removeLegacyConnectionSettings() {
+        let defaults = UserDefaults.standard
+        let address = defaults.string(forKey: DeviceConnectionContext.targetAddressKey)
+        if address == nil || address == "10.7.0.1" {
+            defaults.removeObject(forKey: DeviceConnectionContext.targetAddressKey)
+            defaults.removeObject(forKey: "TunnelRemotePairingPort")
+        }
+        defaults.removeObject(forKey: "keepAliveLocation")
     }
 
     private static func registerDefaultSettings() {
         UserDefaults.standard.register(defaults: [
-            "keepAliveAudio": true,
-            "keepAliveLocation": true
+            "keepAliveAudio": true
         ])
-    }
-
-    private static func ensureKeepAliveSelection() {
-        let defaults = UserDefaults.standard
-        if !defaults.bool(forKey: "keepAliveAudio"), !defaults.bool(forKey: "keepAliveLocation") {
-            defaults.set(true, forKey: "keepAliveAudio")
-        }
     }
 
     private static func applyDocumentPickerCopyWorkaround() {

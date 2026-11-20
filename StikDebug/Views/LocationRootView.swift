@@ -1,7 +1,7 @@
 import SwiftUI
 
 struct LocationRootView: View {
-    @State private var showSettings = !FileManager.default.fileExists(atPath: PairingFileStore.prepareURL().path)
+    @State private var showSettings = true
     @ObservedObject private var simulation = LocationSimulationSession.shared
     @ObservedObject private var mounting = MountingProgress.shared
 
@@ -21,14 +21,6 @@ struct LocationRootView: View {
         }
         .sheet(isPresented: $showSettings) {
             LocationSettingsView()
-        }
-        .onReceive(NotificationCenter.default.publisher(for: Notification.Name("ShowPairingFilePicker"))) { _ in
-            showSettings = true
-        }
-        .task {
-            if FileManager.default.fileExists(atPath: PairingFileStore.prepareURL().path) {
-                startTunnelInBackground(showErrorUI: false)
-            }
         }
     }
 }
