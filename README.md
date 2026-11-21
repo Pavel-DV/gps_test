@@ -39,12 +39,13 @@ Read and understand the complete diff. Personally build the app and inspect the 
 Run the connection regression checks on macOS before building:
 
 ```sh
-MACOSX_DEPLOYMENT_TARGET=14.0 swiftc -parse-as-library StikDebug/Device/DeviceConnectionContext.swift StikDebug/Services/ConnectionDiagnostics.swift StikDebug/Support/PairingFileFormat.swift Tests/RemoteConnectionTests.swift -o /tmp/stik-remote-tests
+MACOSX_DEPLOYMENT_TARGET=14.0 swiftc -parse-as-library StikDebug/Device/DeviceConnectionContext.swift StikDebug/Services/ConnectionDiagnostics.swift StikDebug/Support/PairingFileFormat.swift StikDebug/Device/LegacyImageMounterSession.swift Tests/RemoteConnectionTests.swift -o /tmp/stik-remote-tests
 /tmp/stik-remote-tests
 ```
 
 For two-phone operation, personally test:
 
+- On iOS 16, check and mount DDI both when already mounted and when absent. The image mounter must be followed by a Lockdown query; keep that session alive through the operation and close the mounter first. Retry after a service disconnect. A query/EOF failure must keep simulation disabled and must not trigger an upload based on an assumed unmounted state.
 - An iOS 16 iPhone X target controlled from a newer iPhone: import its Lockdown plist, authenticate over Wi-Fi, display its real model/iOS, download the versioned DMG/signature if needed, and set/change/clear coordinates. Test clearing again after a failed update or lost socket.
 - Copy an error before a successful connection: remote details must be marked unknown; every controller detail must be labeled as controller data.
 - A target with an already mounted DDI and no cached local DDI assets: connect without an unnecessary download.

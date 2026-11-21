@@ -4,6 +4,7 @@ import Darwin
 @main
 struct RemoteConnectionTests {
     static func main() {
+        checkImageMounterSessionLifetime()
         checkPairingFormats()
         let defaults = UserDefaults.standard
         let key = DeviceConnectionContext.targetAddressKey
@@ -42,6 +43,69 @@ struct RemoteConnectionTests {
         expect(annotated.userInfo["ConnectionTargetIP"] as? String == "192.0.2.25", "Preserve the selected remote endpoint")
         expect(annotated.userInfo["ConnectionPort"] as? Int == 50123, "Preserve the attempted port")
         print("Remote connection regression checks passed")
+    }
+
+    private static func checkImageMounterSessionLifetime() {
+        enum Failure: Error { case mounter, lockdown, query, operation }
+        let scenarios: [Failure?] = [nil, .mounter, .lockdown, .query, .operation]
+        for failure in scenarios {
+            var events: [String] = []
+            var mounterIsOpen = false
+            var lockdownIsOpen = false
+            var lockdownWasOpened = false
+            do {
+                let result = try LegacyImageMounterSession.withSession(
+                    openMounter: { () throws -> Int in
+                        events.append("open mounter")
+                        if failure == .mounter { throw Failure.mounter }
+                        mounterIsOpen = true
+                        return 1
+                    },
+                    closeMounter: { _ in
+                        expect(mounterIsOpen, "Mounter must close exactly once")
+                        expect(!lockdownWasOpened || lockdownIsOpen, "Keep Lockdown alive until the mounter is released")
+                        mounterIsOpen = false
+                        events.append("close mounter")
+                    },
+                    openLockdown: { () throws -> Int in
+                        expect(mounterIsOpen, "Open the follow-up Lockdown session after the mounter")
+                        events.append("open lockdown")
+                        if failure == .lockdown { throw Failure.lockdown }
+                        lockdownIsOpen = true
+                        lockdownWasOpened = true
+                        return 2
+                    },
+                    closeLockdown: { _ in
+                        expect(lockdownIsOpen && !mounterIsOpen, "Release Lockdown after the mounter")
+                        lockdownIsOpen = false
+                        events.append("close lockdown")
+                    },
+                    queryLockdown: { _ in
+                        expect(mounterIsOpen && lockdownIsOpen, "Query a live session after opening the mounter")
+                        events.append("query lockdown")
+                        if failure == .query { throw Failure.query }
+                    },
+                    operation: { _ in
+                        expect(mounterIsOpen && lockdownIsOpen, "Retain both connections throughout image operations")
+                        events.append("operate")
+                        if failure == .operation { throw Failure.operation }
+                        return 42
+                    }
+                )
+                expect(failure == nil && result == 42, "Return the operation result only on success")
+            } catch let error as Failure {
+                expect(error == failure, "Propagate the original error; never interpret a read failure as an unmounted image")
+            } catch { fatalError("Unexpected session test error: \(error)") }
+            expect(!mounterIsOpen && !lockdownIsOpen, "Release all opened handles on every exit path")
+            let expected: [String]
+            switch failure {
+            case .mounter: expected = ["open mounter"]
+            case .lockdown: expected = ["open mounter", "open lockdown", "close mounter"]
+            case .query: expected = ["open mounter", "open lockdown", "query lockdown", "close mounter", "close lockdown"]
+            case .operation, nil: expected = ["open mounter", "open lockdown", "query lockdown", "operate", "close mounter", "close lockdown"]
+            }
+            expect(events == expected, "Preserve the required startup, query, operation and cleanup order")
+        }
     }
 
     private static func checkPairingFormats() {

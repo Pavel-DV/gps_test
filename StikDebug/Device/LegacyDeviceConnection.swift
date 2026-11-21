@@ -40,12 +40,13 @@ final class LegacyDeviceConnection {
 
     deinit { idevice_provider_free(provider) }
 
-    func readDeviceInfo() throws -> RemoteDeviceInfo {
-        try IdeviceBridge.withConnectedClient(
+    private func openAuthenticatedLockdown() throws -> OpaquePointer {
+        let client = try IdeviceBridge.connectClient(
             fallback: "Cannot reach remote Lockdown on port 62078. Enable Wi-Fi syncing for the paired target on a computer, keep it unlocked, and check LAN access.",
             missingClientMessage: "Lockdown client was not created",
-            connect: { lockdownd_connect(self.provider, $0) }, cleanup: { lockdownd_client_free($0) }
-        ) { client in
+            connect: { lockdownd_connect(self.provider, $0) }
+        )
+        do {
             var pairing: OpaquePointer?
             if let error = idevice_provider_get_pairing_file(provider, &pairing) {
                 throw IdeviceBridge.consumeFFIError(error, fallback: "Failed to load Lockdown session credentials")
@@ -55,15 +56,37 @@ final class LegacyDeviceConnection {
             if let error = lockdownd_start_session(client, pairing) {
                 throw IdeviceBridge.consumeFFIError(error, fallback: "The remote iPhone did not accept the Lockdown session")
             }
-            return try IdeviceBridge.readDeviceInfo(client: client)
+            return client
+        } catch {
+            lockdownd_client_free(client)
+            throw error
         }
     }
 
+    func readDeviceInfo() throws -> RemoteDeviceInfo {
+        let client = try openAuthenticatedLockdown()
+        defer { lockdownd_client_free(client) }
+        return try IdeviceBridge.readDeviceInfo(client: client)
+    }
+
     func withImageMounter<T>(_ body: (OpaquePointer) throws -> T) throws -> T {
-        try IdeviceBridge.withConnectedClient(
-            fallback: "Failed to connect to remote iOS 16 image mounter",
-            missingClientMessage: "Image mounter was not created",
-            connect: { image_mounter_connect(self.provider, $0) }, cleanup: { image_mounter_free($0) }, body
+        // Opening the mounter alone is insufficient on legacy devices. Query Lockdown
+        // AFTER it connects, and retain that authenticated session until the mounter closes.
+        try LegacyImageMounterSession.withSession(
+            openMounter: {
+                try IdeviceBridge.connectClient(
+                    fallback: "Failed to connect to remote iOS 16 image mounter",
+                    missingClientMessage: "Image mounter was not created",
+                    connect: { image_mounter_connect(self.provider, $0) }
+                )
+            },
+            closeMounter: { image_mounter_free($0) },
+            openLockdown: { try self.openAuthenticatedLockdown() },
+            closeLockdown: { lockdownd_client_free($0) },
+            queryLockdown: { client in
+                _ = try IdeviceBridge.readDeviceInfo(client: client)
+            },
+            operation: body
         )
     }
 

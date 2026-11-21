@@ -23,6 +23,7 @@ jobs:
             StikDebug/Device/DeviceConnectionContext.swift \
             StikDebug/Services/ConnectionDiagnostics.swift \
             StikDebug/Support/PairingFileFormat.swift \
+            StikDebug/Device/LegacyImageMounterSession.swift \
             Tests/RemoteConnectionTests.swift \
             -o build/remote-connection-tests
           build/remote-connection-tests
