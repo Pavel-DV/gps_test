@@ -27,6 +27,20 @@ jobs:
             Tests/RemoteConnectionTests.swift \
             -o build/remote-connection-tests
           build/remote-connection-tests
+      - name: Test local route playback timing
+        run: |
+          MACOSX_DEPLOYMENT_TARGET=14.0 swiftc -parse-as-library \
+            StikDebug/Services/RoutePlaybackTiming.swift \
+            Tests/RoutePlaybackTimingTests.swift \
+            -o build/route-playback-tests
+          build/route-playback-tests
+      - name: Test location command recovery and stale resends
+        run: |
+          MACOSX_DEPLOYMENT_TARGET=14.0 swiftc -parse-as-library \
+            StikDebug/Services/LocationCommandRecovery.swift \
+            Tests/LocationCommandRecoveryTests.swift \
+            -o build/location-recovery-tests
+          build/location-recovery-tests
       - name: Build unsigned archive
         run: |
           xcodebuild clean archive \

@@ -13,7 +13,9 @@ A reduced StikDebug build for simulating a paired iPhone's location. Control ano
 
 The app does not generate pairing files or enable Developer Mode on another phone. It requires the target owner's prior pairing and a reachable developer service. USB iPhone-to-iPhone transport and arbitrary internet connections are not implemented. The controller's own addresses and the old VPN address are rejected before opening a tunnel. Opening the app, importing a file, or returning from the background does not connect or download DDI assets automatically. Press Connect to Remote iPhone after reviewing the target address and selected file.
 
-The map retains place search, coordinate entry/import (GPX, KML, GeoJSON, JSON, CSV and text), bookmarks and route playback. Route planning and road speed lookup require internet access. Optional background audio keep-alive remains in the advanced settings. The app does not request the controller's location for background operation.
+On iOS 16, a transient closed location-service socket is reopened and the same set/clear command is retried once. Authentication, Developer Mode and heartbeat failures are surfaced without repeated service retries. A failed manual update retains the previous simulated point. Old timer resends are invalidated before changing a point or clearing it, and final failures include the original service error.
+
+The map retains place search, coordinate entry/import (GPX, KML, GeoJSON, JSON, CSV and text), bookmarks and route playback. Apple Maps route planning requires internet access. Playback preparation is local and does not fetch road speed limits. Set the simulation speed with the route slider (1-200 km/h, default 50 km/h); the displayed duration follows that speed. Imported routes can be prepared without a speed-lookup service. Very long routes at low speeds are limited to 250,000 playback samples; increase speed or shorten the route if that limit is reached. Optional background audio keep-alive remains in the advanced settings. The app does not request the controller's location for background operation.
 
 StikDebug uses Lockdown for iOS 16 and Remote Pairing for newer supported targets to reach the remote iPhone's developer services. Pairing-file generation inside the app, JIT, scripts, app/process management, profiles and the console have been removed. Old JIT/process/location URL actions and Shortcuts are not supported by this reduced build.
 
@@ -41,6 +43,10 @@ Run the connection regression checks on macOS before building:
 ```sh
 MACOSX_DEPLOYMENT_TARGET=14.0 swiftc -parse-as-library StikDebug/Device/DeviceConnectionContext.swift StikDebug/Services/ConnectionDiagnostics.swift StikDebug/Support/PairingFileFormat.swift StikDebug/Device/LegacyImageMounterSession.swift Tests/RemoteConnectionTests.swift -o /tmp/stik-remote-tests
 /tmp/stik-remote-tests
+MACOSX_DEPLOYMENT_TARGET=14.0 swiftc -parse-as-library StikDebug/Services/RoutePlaybackTiming.swift Tests/RoutePlaybackTimingTests.swift -o /tmp/stik-route-tests
+/tmp/stik-route-tests
+MACOSX_DEPLOYMENT_TARGET=14.0 swiftc -parse-as-library StikDebug/Services/LocationCommandRecovery.swift Tests/LocationCommandRecoveryTests.swift -o /tmp/stik-location-tests
+/tmp/stik-location-tests
 ```
 
 For a reachable iOS 16 target, a read-only diagnostic is available on a computer with Node.js:
@@ -54,6 +60,8 @@ Run this with the controller app disconnected, since closing a heartbeat for the
 For two-phone operation, personally test:
 
 - On iOS 16, check and mount DDI both when already mounted and when absent. Keep one shared Wi-Fi heartbeat active from before the first developer service until the entire target connection is released. Receive Marco and respond Polo; reuse this connection during DDI downloads, retries and location simulation. Closing a separate heartbeat for the same paired host can invalidate its other services. Start the image mounter through an authenticated Lockdown session, honor its returned EnableServiceSSL flag, then query that same control connection after opening the service. Keep the originating Lockdown session alive through the operation and close the mounter first. Verify LookupImage(Developer) with a mounted image and an explicit NotFound response; CopyDevices is not used for this iOS 16 check. Retry after a service disconnect. Diagnostic errors must include the DDI stage, endpoint, negotiated TLS flag and original failure. A query/EOF failure must keep simulation disabled and must not trigger an upload based on an assumed unmounted state.
+- Prepare both an Apple Maps route and an imported route with no Overpass access. Test changing speed rapidly, cancel/reset during preparation, leaving and reopening the view, and playing/stopping a route. The newest speed must win; canceled work must not leave a spinner or enable an outdated sample list. Test an oversized slow route for a visible error rather than excessive memory use.
+- On iOS 16, set point A, wait, then change to B near a resend tick. Repeat after an idle period and after returning from the background. The first click should recover once from a stale socket, never send queued A after B succeeds, and show the original error if recovery fails. Stop near a resend tick must not restore an old point.
 - An iOS 16 iPhone X target controlled from a newer iPhone: import its Lockdown plist, authenticate over Wi-Fi, display its real model/iOS, download the versioned DMG/signature if needed, and set/change/clear coordinates. Test clearing again after a failed update or lost socket.
 - Copy an error before a successful connection: remote details must be marked unknown; every controller detail must be labeled as controller data.
 - A target with an already mounted DDI and no cached local DDI assets: connect without an unnecessary download.
