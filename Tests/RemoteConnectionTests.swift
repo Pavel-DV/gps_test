@@ -4,6 +4,7 @@ import Darwin
 @main
 struct RemoteConnectionTests {
     static func main() {
+        checkDeveloperImageLookup()
         checkImageMounterSessionLifetime()
         checkPairingFormats()
         let defaults = UserDefaults.standard
@@ -45,6 +46,15 @@ struct RemoteConnectionTests {
         print("Remote connection regression checks passed")
     }
 
+    private static func checkDeveloperImageLookup() {
+        expect(LegacyDeveloperImageLookup.outcome(signatureLength: 128, errorVariant: nil) == .mounted, "A returned Developer signature confirms the DDI")
+        expect(LegacyDeveloperImageLookup.outcome(signatureLength: 0, errorVariant: "NotFound") == .notMounted, "Only an explicit image NotFound permits a missing-image result")
+        expect(LegacyDeveloperImageLookup.outcome(signatureLength: 0, errorVariant: nil) == .failure, "An empty successful signature is an invalid response")
+        for variant in ["Socket(Custom { kind: UnexpectedEof })", "Socket(ConnectionReset)", "Tls(UnexpectedEof)", "UnexpectedResponse(NotFound)", "NotFound: connection interrupted", "UnknownFFIError"] {
+            expect(LegacyDeveloperImageLookup.outcome(signatureLength: 0, errorVariant: variant) == .failure, "Never interpret a transport/protocol error as an absent DDI")
+        }
+    }
+
     private static func checkImageMounterSessionLifetime() {
         enum Failure: Error { case mounter, lockdown, query, operation }
         let scenarios: [Failure?] = [nil, .mounter, .lockdown, .query, .operation]
@@ -52,27 +62,12 @@ struct RemoteConnectionTests {
             var events: [String] = []
             var mounterIsOpen = false
             var lockdownIsOpen = false
-            var lockdownWasOpened = false
             do {
                 let result = try LegacyImageMounterSession.withSession(
-                    openMounter: { () throws -> Int in
-                        events.append("open mounter")
-                        if failure == .mounter { throw Failure.mounter }
-                        mounterIsOpen = true
-                        return 1
-                    },
-                    closeMounter: { _ in
-                        expect(mounterIsOpen, "Mounter must close exactly once")
-                        expect(!lockdownWasOpened || lockdownIsOpen, "Keep Lockdown alive until the mounter is released")
-                        mounterIsOpen = false
-                        events.append("close mounter")
-                    },
                     openLockdown: { () throws -> Int in
-                        expect(mounterIsOpen, "Open the follow-up Lockdown session after the mounter")
                         events.append("open lockdown")
                         if failure == .lockdown { throw Failure.lockdown }
                         lockdownIsOpen = true
-                        lockdownWasOpened = true
                         return 2
                     },
                     closeLockdown: { _ in
@@ -80,8 +75,20 @@ struct RemoteConnectionTests {
                         lockdownIsOpen = false
                         events.append("close lockdown")
                     },
-                    queryLockdown: { _ in
-                        expect(mounterIsOpen && lockdownIsOpen, "Query a live session after opening the mounter")
+                    openMounter: { (session: Int) throws -> Int in
+                        expect(lockdownIsOpen && session == 2, "Start the mounter through the retained authenticated session")
+                        events.append("open mounter")
+                        if failure == .mounter { throw Failure.mounter }
+                        mounterIsOpen = true
+                        return 1
+                    },
+                    closeMounter: { _ in
+                        expect(mounterIsOpen && lockdownIsOpen, "Keep the starting Lockdown session alive until the mounter is released")
+                        mounterIsOpen = false
+                        events.append("close mounter")
+                    },
+                    queryLockdown: { session in
+                        expect(mounterIsOpen && lockdownIsOpen && session == 2, "Query the same control session after opening the service")
                         events.append("query lockdown")
                         if failure == .query { throw Failure.query }
                     },
@@ -94,17 +101,17 @@ struct RemoteConnectionTests {
                 )
                 expect(failure == nil && result == 42, "Return the operation result only on success")
             } catch let error as Failure {
-                expect(error == failure, "Propagate the original error; never interpret a read failure as an unmounted image")
+                expect(error == failure, "Propagate the original error; never interpret EOF as an unmounted image")
             } catch { fatalError("Unexpected session test error: \(error)") }
-            expect(!mounterIsOpen && !lockdownIsOpen, "Release all opened handles on every exit path")
+            expect(!mounterIsOpen && !lockdownIsOpen, "Release every opened handle on every exit path")
             let expected: [String]
             switch failure {
-            case .mounter: expected = ["open mounter"]
-            case .lockdown: expected = ["open mounter", "open lockdown", "close mounter"]
-            case .query: expected = ["open mounter", "open lockdown", "query lockdown", "close mounter", "close lockdown"]
-            case .operation, nil: expected = ["open mounter", "open lockdown", "query lockdown", "operate", "close mounter", "close lockdown"]
+            case .lockdown: expected = ["open lockdown"]
+            case .mounter: expected = ["open lockdown", "open mounter", "close lockdown"]
+            case .query: expected = ["open lockdown", "open mounter", "query lockdown", "close mounter", "close lockdown"]
+            case .operation, nil: expected = ["open lockdown", "open mounter", "query lockdown", "operate", "close mounter", "close lockdown"]
             }
-            expect(events == expected, "Preserve the required startup, query, operation and cleanup order")
+            expect(events == expected, "Preserve authenticated StartService, post-connect query and cleanup order")
         }
     }
 

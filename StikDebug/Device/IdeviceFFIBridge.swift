@@ -326,7 +326,11 @@ private enum LegacyLocationState {
     static func set(deviceIP: String, latitude: Double, longitude: Double, pairingFile: String) -> Int32 {
         do {
             if client == nil {
-                let newConnection = try LegacyDeviceConnection(targetIP: deviceIP, pairingURL: URL(fileURLWithPath: pairingFile))
+                guard let newConnection = DeviceTunnelContext.shared.legacyConnection,
+                      newConnection.targetIP == deviceIP else {
+                    throw IdeviceBridge.makeError(message: "The selected legacy target is not connected")
+                }
+                try newConnection.ensureHeartbeat()
                 let newClient = try IdeviceBridge.connectClient(
                     fallback: "Failed to connect to remote iOS 16 location service",
                     missingClientMessage: "iOS 16 location service was not created",
@@ -335,6 +339,7 @@ private enum LegacyLocationState {
                 connection = newConnection
                 client = newClient
             }
+            try connection?.ensureHeartbeat()
             let error = String(latitude).withCString { lat in
                 String(longitude).withCString { lon in lockdown_location_simulation_set(client, lat, lon) }
             }
@@ -448,6 +453,7 @@ func simulate_location(_ deviceIP: String, _ latitude: Double, _ longitude: Doub
 func clear_simulated_location() -> Int32 {
     if let legacy = DeviceTunnelContext.shared.legacyConnection {
         do {
+            try legacy.ensureHeartbeat()
             if LegacyLocationState.client == nil {
                 LegacyLocationState.client = try IdeviceBridge.connectClient(
                     fallback: "Failed to reconnect to clear remote iOS 16 location",

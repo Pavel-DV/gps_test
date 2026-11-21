@@ -5,6 +5,8 @@ import idevice
 /// Authenticated, direct TCP services used by an iOS 16 target. No RemoteXPC tunnel.
 final class LegacyDeviceConnection {
     let provider: OpaquePointer
+    let targetIP: String
+    private var heartbeat: LegacyWiFiHeartbeat?
 
     init(targetIP: String, pairingURL: URL) throws {
         if let message = DeviceConnectionContext.validationMessage(for: targetIP) {
@@ -36,9 +38,20 @@ final class LegacyDeviceConnection {
         }
         guard let result else { throw IdeviceBridge.makeError(message: "Lockdown provider was not created") }
         provider = result
+        self.targetIP = targetIP
     }
 
-    deinit { idevice_provider_free(provider) }
+    deinit {
+        heartbeat?.stop()
+        idevice_provider_free(provider)
+    }
+
+    func stopHeartbeat() { heartbeat?.stop() }
+
+    func ensureHeartbeat() throws {
+        guard let heartbeat else { throw IdeviceBridge.makeError(message: "The remote Wi-Fi heartbeat has not been started.") }
+        try heartbeat.ensureAlive()
+    }
 
     private func openAuthenticatedLockdown() throws -> OpaquePointer {
         let client = try IdeviceBridge.connectClient(
@@ -65,45 +78,132 @@ final class LegacyDeviceConnection {
 
     func readDeviceInfo() throws -> RemoteDeviceInfo {
         let client = try openAuthenticatedLockdown()
-        defer { lockdownd_client_free(client) }
-        return try IdeviceBridge.readDeviceInfo(client: client)
+        var sessionTransferred = false
+        defer { if !sessionTransferred { lockdownd_client_free(client) } }
+        let info = try IdeviceBridge.readDeviceInfo(client: client)
+        if heartbeat == nil {
+            var port: UInt16 = 0
+            var usesTLS = false
+            let socket = try openServiceSocket(lockdown: client, name: "com.apple.mobile.heartbeat", port: &port, usesTLS: &usesTLS)
+            var handle: OpaquePointer?
+            // heartbeat_new consumes the socket on entry.
+            if let error = heartbeat_new(socket, &handle) {
+                throw IdeviceBridge.consumeFFIError(error, fallback: "Failed to initialize Wi-Fi heartbeat")
+            }
+            guard let handle else { throw IdeviceBridge.makeError(message: "Wi-Fi heartbeat client was not created") }
+            sessionTransferred = true
+            heartbeat = try LegacyWiFiHeartbeat(client: handle, lockdown: client)
+            LogManager.shared.addInfoLog("[Legacy Wi-Fi] Heartbeat active: Marco received and Polo sent")
+        }
+        try ensureHeartbeat()
+        return info
+    }
+
+    /// Uses the service's negotiated SSL flag and retains the session that started it.
+    private func openServiceSocket(lockdown: OpaquePointer, name: String, port: inout UInt16, usesTLS: inout Bool) throws -> OpaquePointer {
+        if let error = lockdownd_start_service(lockdown, name, &port, &usesTLS) {
+            throw IdeviceBridge.consumeFFIError(error, fallback: "StartService(\(name)) failed")
+        }
+        guard port != 0 else { throw IdeviceBridge.makeError(message: "The remote service returned port zero") }
+        LogManager.shared.addInfoLog("[Legacy Wi-Fi] \(name): endpoint=\(targetIP):\(port), TLS=\(usesTLS)")
+        var address = sockaddr_in()
+        address.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
+        address.sin_family = sa_family_t(AF_INET)
+        address.sin_port = port.bigEndian
+        guard targetIP.withCString({ inet_pton(AF_INET, $0, &address.sin_addr) }) == 1 else {
+            throw IdeviceBridge.makeError(message: "Invalid remote service address")
+        }
+        var socket: OpaquePointer?
+        let connectError = withUnsafePointer(to: &address) { pointer in
+            pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                idevice_new_tcp_socket($0, socklen_t(MemoryLayout<sockaddr_in>.size), "StikDebugImageMounter", &socket)
+            }
+        }
+        if let connectError { throw IdeviceBridge.consumeFFIError(connectError, fallback: "Remote service TCP connect failed") }
+        guard let socket else { throw IdeviceBridge.makeError(message: "Remote service socket was not created") }
+        var socketTransferred = false
+        defer { if !socketTransferred { idevice_free(socket) } }
+        if usesTLS {
+            var pairing: OpaquePointer?
+            if let error = idevice_provider_get_pairing_file(provider, &pairing) {
+                throw IdeviceBridge.consumeFFIError(error, fallback: "Failed to load service TLS credentials")
+            }
+            guard let pairing else { throw IdeviceBridge.makeError(message: "Missing service TLS credentials") }
+            defer { idevice_pairing_file_free(pairing) }
+            // iOS 16 does not use the pre-iOS-5 TLS compatibility mode.
+            if let error = idevice_start_session(socket, pairing, false) {
+                throw IdeviceBridge.consumeFFIError(error, fallback: "Remote service TLS handshake failed")
+            }
+        }
+        socketTransferred = true
+        return socket
+    }
+
+    private func openImageMounter(lockdown: OpaquePointer, port: inout UInt16, usesTLS: inout Bool) throws -> OpaquePointer {
+        let socket = try openServiceSocket(lockdown: lockdown, name: "com.apple.mobile.mobile_image_mounter", port: &port, usesTLS: &usesTLS)
+        var mounter: OpaquePointer?
+        // image_mounter_new consumes a non-null IdeviceHandle on entry.
+        let error = image_mounter_new(socket, &mounter)
+        if let error { throw IdeviceBridge.consumeFFIError(error, fallback: "Failed to wrap image-mounter socket") }
+        guard let mounter else { throw IdeviceBridge.makeError(message: "Image mounter was not created") }
+        return mounter
     }
 
     func withImageMounter<T>(_ body: (OpaquePointer) throws -> T) throws -> T {
-        // Opening the mounter alone is insufficient on legacy devices. Query Lockdown
-        // AFTER it connects, and retain that authenticated session until the mounter closes.
-        try LegacyImageMounterSession.withSession(
-            openMounter: {
-                try IdeviceBridge.connectClient(
-                    fallback: "Failed to connect to remote iOS 16 image mounter",
-                    missingClientMessage: "Image mounter was not created",
-                    connect: { image_mounter_connect(self.provider, $0) }
-                )
-            },
-            closeMounter: { image_mounter_free($0) },
-            openLockdown: { try self.openAuthenticatedLockdown() },
-            closeLockdown: { lockdownd_client_free($0) },
-            queryLockdown: { client in
-                _ = try IdeviceBridge.readDeviceInfo(client: client)
-            },
-            operation: body
-        )
+        try ensureHeartbeat()
+        var port: UInt16 = 0
+        var usesTLS = false
+        var stage = "authenticate Lockdown"
+        do {
+            return try LegacyImageMounterSession.withSession(
+                openLockdown: { try self.openAuthenticatedLockdown() },
+                closeLockdown: { lockdownd_client_free($0) },
+                openMounter: { lockdown in
+                    stage = "start/connect image mounter"
+                    return try self.openImageMounter(lockdown: lockdown, port: &port, usesTLS: &usesTLS)
+                },
+                closeMounter: { image_mounter_free($0) },
+                queryLockdown: { client in
+                    stage = "query retained Lockdown session"
+                    _ = try IdeviceBridge.readDeviceInfo(client: client)
+                },
+                operation: { client in
+                    stage = "image-mounter command"
+                    return try body(client)
+                }
+            )
+        } catch {
+            let error = error as NSError
+            var info = error.userInfo
+            let endpoint = port == 0 ? targetIP : "\(targetIP):\(port)"
+            let tls = port == 0 ? "not negotiated" : String(usesTLS)
+            info[NSLocalizedDescriptionKey] = "iOS 16 DDI [\(stage), endpoint=\(endpoint), TLS=\(tls)]: \(error.localizedDescription)"
+            throw NSError(domain: error.domain, code: error.code, userInfo: info)
+        }
     }
 
     func isImageMounted() throws -> Bool {
         try withImageMounter { client in
-            var devices: UnsafeMutablePointer<plist_t?>?
-            var count = 0
-            if let error = image_mounter_copy_devices(client, &devices, &count) {
-                throw IdeviceBridge.consumeFFIError(error, fallback: "Failed to inspect remote developer images")
-            }
-            defer {
-                if let devices {
-                    for index in 0..<count { plist_free(devices[index]) }
-                    idevice_data_free(UnsafeMutableRawPointer(devices).assumingMemoryBound(to: UInt8.self), UInt(count * MemoryLayout<plist_t?>.stride))
+            var signature: UnsafeMutablePointer<UInt8>?
+            var signatureLength = 0
+            defer { if let signature { idevice_data_free(signature, UInt(signatureLength)) } }
+            let error = image_mounter_lookup_image(client, "Developer", &signature, &signatureLength)
+            let variant = error.flatMap { IdeviceBridge.string(from: $0.pointee.message) }
+            let result = LegacyDeveloperImageLookup.outcome(signatureLength: signatureLength,
+                                                           errorVariant: error == nil ? nil : (variant ?? "UnknownFFIError"))
+            if let error {
+                if result == .notMounted {
+                    idevice_error_free(error)
+                    LogManager.shared.addInfoLog("[Legacy DDI] LookupImage(Developer): not mounted")
+                    return false
                 }
+                throw IdeviceBridge.consumeFFIError(error, fallback: "LookupImage(Developer) failed")
             }
-            return count > 0
+            guard result == .mounted, signature != nil else {
+                throw IdeviceBridge.makeError(message: "LookupImage(Developer) returned no signature and no explicit NotFound result")
+            }
+            LogManager.shared.addInfoLog("[Legacy DDI] LookupImage(Developer): mounted")
+            return true
         }
     }
 

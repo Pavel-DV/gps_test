@@ -327,6 +327,7 @@ final class DeviceTunnelContext {
             if let adapter { adapter_free(adapter) }
             handshake = nil
             adapter = nil
+            legacyConnection?.stopHeartbeat()
             legacyConnection = nil
             targetVersion = nil
             targetInfo = nil

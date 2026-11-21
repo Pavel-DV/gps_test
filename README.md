@@ -43,9 +43,17 @@ MACOSX_DEPLOYMENT_TARGET=14.0 swiftc -parse-as-library StikDebug/Device/DeviceCo
 /tmp/stik-remote-tests
 ```
 
+For a reachable iOS 16 target, a read-only diagnostic is available on a computer with Node.js:
+
+```sh
+node tools/diagnose-legacy-ddi.cjs <target-ip> <pairing.plist>
+```
+
+Run this with the controller app disconnected, since closing a heartbeat for the same paired host can terminate its other services. It authenticates with the local XML Lockdown record, pins the target's certificate, starts one Wi-Fi heartbeat, and compares LookupImage and CopyDevices without mounting an image or changing location. It prints only device version/model, service endpoints and response summaries. Use --no-heartbeat for a controlled comparison, or --repeat=4 --pause-ms=2000 to check repeated requests with a sustained heartbeat. Never attach the pairing record or private keys to a report.
+
 For two-phone operation, personally test:
 
-- On iOS 16, check and mount DDI both when already mounted and when absent. The image mounter must be followed by a Lockdown query; keep that session alive through the operation and close the mounter first. Retry after a service disconnect. A query/EOF failure must keep simulation disabled and must not trigger an upload based on an assumed unmounted state.
+- On iOS 16, check and mount DDI both when already mounted and when absent. Keep one shared Wi-Fi heartbeat active from before the first developer service until the entire target connection is released. Receive Marco and respond Polo; reuse this connection during DDI downloads, retries and location simulation. Closing a separate heartbeat for the same paired host can invalidate its other services. Start the image mounter through an authenticated Lockdown session, honor its returned EnableServiceSSL flag, then query that same control connection after opening the service. Keep the originating Lockdown session alive through the operation and close the mounter first. Verify LookupImage(Developer) with a mounted image and an explicit NotFound response; CopyDevices is not used for this iOS 16 check. Retry after a service disconnect. Diagnostic errors must include the DDI stage, endpoint, negotiated TLS flag and original failure. A query/EOF failure must keep simulation disabled and must not trigger an upload based on an assumed unmounted state.
 - An iOS 16 iPhone X target controlled from a newer iPhone: import its Lockdown plist, authenticate over Wi-Fi, display its real model/iOS, download the versioned DMG/signature if needed, and set/change/clear coordinates. Test clearing again after a failed update or lost socket.
 - Copy an error before a successful connection: remote details must be marked unknown; every controller detail must be labeled as controller data.
 - A target with an already mounted DDI and no cached local DDI assets: connect without an unnecessary download.
