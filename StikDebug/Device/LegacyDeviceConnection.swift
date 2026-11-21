@@ -54,11 +54,18 @@ final class LegacyDeviceConnection {
     }
 
     private func openAuthenticatedLockdown() throws -> OpaquePointer {
-        let client = try IdeviceBridge.connectClient(
-            fallback: "Cannot reach remote Lockdown on port 62078. Enable Wi-Fi syncing for the paired target on a computer, keep it unlocked, and check LAN access.",
-            missingClientMessage: "Lockdown client was not created",
-            connect: { lockdownd_connect(self.provider, $0) }
-        )
+        // The bundled lockdownd_connect frees its provider on connection failure.
+        // Calling it here would leave provider dangling and deinit would free it twice.
+        // Open TCP directly (with the FFI TCP timeout), then transfer only that socket.
+        // Upstream fix: jkcoxson/idevice@33b8fb57ae51c745d0a50d2321c99636b196089a.
+        let socket = try openSocket(port: 62078,
+            fallback: "Cannot reach remote Lockdown on port 62078. Enable Wi-Fi syncing for the paired target on a computer, keep it unlocked, and check LAN access.")
+        var handle: OpaquePointer?
+        // lockdownd_new consumes this valid socket on entry; do not free it again.
+        if let error = lockdownd_new(socket, &handle) {
+            throw IdeviceBridge.consumeFFIError(error, fallback: "Failed to wrap remote Lockdown socket")
+        }
+        guard let client = handle else { throw IdeviceBridge.makeError(message: "Lockdown client was not created") }
         do {
             var pairing: OpaquePointer?
             if let error = idevice_provider_get_pairing_file(provider, &pairing) {
@@ -106,21 +113,7 @@ final class LegacyDeviceConnection {
         }
         guard port != 0 else { throw IdeviceBridge.makeError(message: "The remote service returned port zero") }
         LogManager.shared.addInfoLog("[Legacy Wi-Fi] \(name): endpoint=\(targetIP):\(port), TLS=\(usesTLS)")
-        var address = sockaddr_in()
-        address.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
-        address.sin_family = sa_family_t(AF_INET)
-        address.sin_port = port.bigEndian
-        guard targetIP.withCString({ inet_pton(AF_INET, $0, &address.sin_addr) }) == 1 else {
-            throw IdeviceBridge.makeError(message: "Invalid remote service address")
-        }
-        var socket: OpaquePointer?
-        let connectError = withUnsafePointer(to: &address) { pointer in
-            pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) {
-                idevice_new_tcp_socket($0, socklen_t(MemoryLayout<sockaddr_in>.size), "StikDebugService", &socket)
-            }
-        }
-        if let connectError { throw IdeviceBridge.consumeFFIError(connectError, fallback: "Remote service TCP connect failed") }
-        guard let socket else { throw IdeviceBridge.makeError(message: "Remote service socket was not created") }
+        let socket = try openSocket(port: port, fallback: "Remote service TCP connect failed")
         var socketTransferred = false
         defer { if !socketTransferred { idevice_free(socket) } }
         if usesTLS {
@@ -136,6 +129,26 @@ final class LegacyDeviceConnection {
             }
         }
         socketTransferred = true
+        return socket
+    }
+
+    /// Owns no provider handle, so a TCP failure cannot invalidate the connection's credentials.
+    private func openSocket(port: UInt16, fallback: String) throws -> OpaquePointer {
+        var address = sockaddr_in()
+        address.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
+        address.sin_family = sa_family_t(AF_INET)
+        address.sin_port = port.bigEndian
+        guard targetIP.withCString({ inet_pton(AF_INET, $0, &address.sin_addr) }) == 1 else {
+            throw IdeviceBridge.makeError(message: "Invalid remote address")
+        }
+        var socket: OpaquePointer?
+        let connectError = withUnsafePointer(to: &address) { pointer in
+            pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                idevice_new_tcp_socket($0, socklen_t(MemoryLayout<sockaddr_in>.size), "StikDebugService", &socket)
+            }
+        }
+        if let connectError { throw IdeviceBridge.consumeFFIError(connectError, fallback: "\(fallback) [\(targetIP):\(port)]") }
+        guard let socket else { throw IdeviceBridge.makeError(message: "Remote TCP socket was not created") }
         return socket
     }
 
