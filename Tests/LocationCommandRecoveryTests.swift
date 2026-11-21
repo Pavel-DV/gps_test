@@ -4,56 +4,50 @@ import Darwin
 @main
 struct LocationCommandRecoveryTests {
     static func main() throws {
-        var attempts = 0
-        var resets = 0
-        var sentCoordinates: [Double] = []
-        let requestedLatitude = 12.345
-        let result = try LocationCommandRecovery.run(operation: {
-            attempts += 1
-            sentCoordinates.append(requestedLatitude)
-            if attempts == 1 { throw NSError(domain: NSPOSIXErrorDomain, code: Int(EPIPE)) }
-            return "sent"
-        }, reset: { resets += 1 })
-        expect(result == "sent" && attempts == 2 && resets == 1, "A stale service gets exactly one reset and retry")
-        expect(sentCoordinates == [requestedLatitude, requestedLatitude], "A retry must send the same requested point")
-
-        attempts = 0
-        resets = 0
-        let finalError = NSError(domain: "Test", code: 99, userInfo: [NSLocalizedDescriptionKey: "Socket(ConnectionReset)"])
-        do {
-            _ = try LocationCommandRecovery.run(operation: { () throws -> Bool in
-                attempts += 1
-                if attempts == 1 { throw NSError(domain: NSPOSIXErrorDomain, code: Int(ECONNRESET)) }
-                throw finalError
-            }, reset: { resets += 1 })
-            fatalError("The second failure must reach the caller")
-        } catch let error as NSError {
-            expect(error === finalError && attempts == 2 && resets == 1, "Do not loop; preserve the final error for diagnostics")
-        }
-
-        for detail in ["PairVerifyFailed", "InvalidHostID", "DeveloperModeNotEnabled", "PasswordProtected",
-                       "Wi-Fi heartbeat: Socket(ConnectionReset)", "DeviceLocked: Socket(ConnectionReset)",
-                       "ServiceNotFound: Socket(ConnectionReset)", "UnexpectedResponse", "Missing pairing file"] {
-            attempts = 0
-            resets = 0
-            let permanent = NSError(domain: "Test", code: 1, userInfo: [NSLocalizedDescriptionKey: detail])
-            do {
-                _ = try LocationCommandRecovery.run(operation: { () throws -> Bool in
-                    attempts += 1
-                    throw permanent
-                }, reset: { resets += 1 })
-                fatalError("Permanent failures must be surfaced")
-            } catch let error as NSError {
-                expect(error === permanent && attempts == 1 && resets == 0, "Never retry authorization, heartbeat or protocol errors")
-            }
-        }
-        for detail in ["Socket(Custom { kind: UnexpectedEof })", "BrokenPipe", "ConnectionReset", "peer closed connection", "Socket timed out"] {
-            expect(LocationCommandRecovery.isTransientConnectionError(NSError(domain: "Test", code: 1,
-                   userInfo: [NSLocalizedDescriptionKey: detail])), "Recognize wrapped transient socket errors")
-        }
+        checkFirstFailureIsSurfaced()
         try checkOneCommandPerConnection()
         checkQueuedResends()
-        print("Location command recovery and resend checks passed")
+        print("Single-attempt location command and resend checks passed")
+    }
+
+    private static func checkFirstFailureIsSurfaced() {
+        let failures = [
+            NSError(domain: NSPOSIXErrorDomain, code: Int(EPIPE)),
+            NSError(domain: NSPOSIXErrorDomain, code: Int(ECONNRESET))
+        ] + ["Socket(Custom { kind: UnexpectedEof })", "Socket timed out", "PairVerifyFailed",
+             "DeveloperModeNotEnabled", "Wi-Fi heartbeat: Socket(ConnectionReset)"].map {
+            NSError(domain: "Test", code: 1, userInfo: [NSLocalizedDescriptionKey: $0])
+        }
+        for failure in failures {
+            var opens = 0
+            var sends = 0
+            var closes = 0
+            do {
+                try LocationCommandRecovery.withFreshConnection(open: { opens += 1; return opens },
+                    close: { _ in closes += 1 }, operation: { (_: Int) throws -> Void in
+                        sends += 1
+                        throw failure
+                    })
+                fatalError("The first command failure must reach the caller")
+            } catch let error as NSError {
+                expect(error === failure, "Preserve the original error without replacing it")
+                expect(opens == 1 && sends == 1 && closes == 1, "Release the failed command without retrying")
+            }
+
+            opens = 0
+            sends = 0
+            closes = 0
+            do {
+                try LocationCommandRecovery.withFreshConnection(open: { () throws -> Int in
+                    opens += 1
+                    throw failure
+                }, close: { _ in closes += 1 }, operation: { _ in sends += 1 })
+                fatalError("The first connection failure must reach the caller")
+            } catch let error as NSError {
+                expect(error === failure && opens == 1 && sends == 0 && closes == 0,
+                       "Do not retry opening or send a command after a failed open")
+            }
+        }
     }
 
     private static func checkOneCommandPerConnection() throws {
@@ -83,24 +77,20 @@ struct LocationCommandRecoveryTests {
         expect(opened.count == 3 && opened.allSatisfy({ $0.closed }), "Close each successful command instead of caching its client")
 
         opened = []
-        var attempts = 0
-        try LocationCommandRecovery.withFreshConnection(open: open, close: { $0.closed = true }, operation: { client in
-            attempts += 1
-            if attempts == 1 { throw NSError(domain: NSPOSIXErrorDomain, code: Int(EPIPE)) }
-            expect(opened.count == 2 && opened[0].closed, "Release the failed client before opening a retry")
-            send(4, on: client)
-        })
-        expect(attempts == 2 && opened.allSatisfy({ $0.closed }), "Every retry owns and releases a new connection")
-        expect(applied.last == 4, "A retried command must still apply the requested point")
-
-        opened = []
-        let permanent = NSError(domain: "Test", code: 1, userInfo: [NSLocalizedDescriptionKey: "DeveloperModeNotEnabled"])
+        let failure = NSError(domain: NSPOSIXErrorDomain, code: Int(EPIPE))
         do {
-            try LocationCommandRecovery.withFreshConnection(open: open, close: { $0.closed = true }, operation: { (_: OneShotClient) throws -> Void in throw permanent })
-            fatalError("Do not swallow a permanent command failure")
+            try LocationCommandRecovery.withFreshConnection(open: open, close: { $0.closed = true }, operation: { (_: OneShotClient) throws -> Void in
+                throw failure
+            })
+            fatalError("Do not swallow a failed send")
         } catch let error as NSError {
-            expect(error === permanent && opened.count == 1 && opened[0].closed, "Release permanent failures without retrying")
+            expect(error === failure && opened.count == 1 && opened[0].closed, "Close the first failed connection without opening another")
+            expect(applied == [1, 2, 3], "A failed command must not trigger a hidden send")
         }
+        // Only an explicit subsequent call may open another connection and send again.
+        try LocationCommandRecovery.withFreshConnection(open: open, close: { $0.closed = true }, operation: { send(4, on: $0) })
+        expect(opened.count == 2 && opened.allSatisfy({ $0.closed }), "A manual retry owns a new connection")
+        expect(applied == [1, 2, 3, 4], "An explicit subsequent command still works after a failure")
     }
 
     private static func checkQueuedResends() {

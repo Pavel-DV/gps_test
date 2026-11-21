@@ -34,7 +34,7 @@ jobs:
             Tests/RoutePlaybackTimingTests.swift \
             -o build/route-playback-tests
           build/route-playback-tests
-      - name: Test location command recovery and stale resends
+      - name: Test single-attempt location commands and stale resends
         run: |
           MACOSX_DEPLOYMENT_TARGET=14.0 swiftc -parse-as-library \
             StikDebug/Services/LocationCommandRecovery.swift \

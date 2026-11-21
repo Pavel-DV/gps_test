@@ -1087,7 +1087,6 @@ struct LocationSimulationView: View {
 
     private func simulate() {
         guard pairingExists, isReadyToSimulate, let coord = coordinate, !isBusy else { return }
-        let previousCoordinate = simulationSession.isActive ? simulationSession.coordinate : nil
         // Stop both the timer and previously queued resends before sending a new point.
         simulationSession.pauseResending()
         runLocationCommand(
@@ -1095,10 +1094,7 @@ struct LocationSimulationView: View {
             errorMessage: { code in
                 "Could not update the remote iPhone's location (error \(code))."
             },
-            operation: { locationUpdateCode(for: coord) },
-            onFailure: {
-                if let previousCoordinate { startResendLoop(with: previousCoordinate) }
-            }
+            operation: { locationUpdateCode(for: coord) }
         ) {
             routePlaybackCoordinate = nil
             beginBackgroundTask()
@@ -1138,7 +1134,6 @@ struct LocationSimulationView: View {
         errorTitle: String,
         errorMessage: @escaping (Int32) -> String,
         operation: @escaping () -> Int32,
-        onFailure: (() -> Void)? = nil,
         onSuccess: @escaping () -> Void
     ) {
         isBusy = true
@@ -1156,7 +1151,6 @@ struct LocationSimulationView: View {
                     alertTitle = errorTitle
                     let summary = errorMessage(code)
                     alertMessage = detail.map { "\(summary)\n\n\($0)" } ?? summary
-                    onFailure?()
                     connectionErrorMessage = "Code \(code): \(alertMessage)"
                     showAlert = true
                 }
@@ -1387,9 +1381,6 @@ struct LocationSimulationView: View {
                         routePlaybackTask = nil
                         routePlaybackCoordinate = lastSuccessfulCoordinate
                         LocationSimulationSession.shared.clearRoute()
-                        if let lastSuccessfulCoordinate {
-                            startResendLoop(with: lastSuccessfulCoordinate)
-                        }
                         alertTitle = "Route Simulation Failed"
                         let summary = "Could not continue route simulation (error \(code))."
                         alertMessage = result.detail.map { "\(summary)\n\n\($0)" } ?? summary

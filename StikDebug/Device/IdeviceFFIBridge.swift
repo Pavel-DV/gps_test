@@ -385,6 +385,7 @@ func simulate_location(_ deviceIP: String, _ latitude: Double, _ longitude: Doub
         if let ffiError = location_simulation_set(locationSimulation, latitude, longitude) {
             LocationSimulationCommandQueue.recordFFIFailure(ffiError, context: "Failed to update location through the existing remote service")
             LocationSimulationState.cleanup()
+            return LocationSimulationStatus.locationSet
         } else {
             return LocationSimulationStatus.ok
         }
@@ -468,7 +469,6 @@ func simulate_location(_ deviceIP: String, _ latitude: Double, _ longitude: Doub
         return LocationSimulationStatus.locationSet
     }
 
-    LocationSimulationCommandQueue.beginCommand()
     return LocationSimulationStatus.ok
 }
 
