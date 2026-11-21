@@ -12,6 +12,7 @@ struct LocationSettingsView: View {
     @State private var errorMessage: String?
     @State private var pairingExists = FileManager.default.fileExists(atPath: PairingFileStore.prepareURL().path)
     @State private var pairingName = UserDefaults.standard.string(forKey: "ImportedRemotePairingName")
+    @State private var pairingFormat = try? PairingFileFormat.detect(at: PairingFileStore.prepareURL())
     @FocusState private var focusedField: Field?
 
     private enum Field: Hashable { case address, port }
@@ -22,7 +23,7 @@ struct LocationSettingsView: View {
     private var port: String { remotePairingPort.trimmingCharacters(in: .whitespacesAndNewlines) }
     private var inputError: String? {
         if !address.isEmpty, let message = DeviceConnectionContext.validationMessage(for: address) { return message }
-        if !port.isEmpty, UInt16(port).map({ $0 != 0 }) != true {
+        if pairingFormat != .lockdown, !port.isEmpty, UInt16(port).map({ $0 != 0 }) != true {
             return "Remote Pairing port must be between 1 and 65535, or empty for automatic discovery."
         }
         return nil
@@ -49,18 +50,21 @@ struct LocationSettingsView: View {
                 }
 
                 Section {
-                    Label(pairingExists ? (pairingName ?? "Remote Pairing file imported") : "No pairing file selected",
+                    Label(pairingExists ? (pairingName ?? "Pairing file imported") : "No pairing file selected",
                           systemImage: pairingExists ? "checkmark.circle.fill" : "doc.badge.plus")
                         .foregroundStyle(pairingExists ? Color.green : Color.secondary)
+                    if let pairingFormat {
+                        Text(pairingFormat.displayName).font(.footnote).foregroundStyle(.secondary)
+                    }
                     Button(pairingExists ? "Replace Pairing File" : "Import Pairing File") {
                         focusedField = nil
                         showImporter = true
                     }
                     .disabled(connectionIsBusy)
                 } header: {
-                    Text("2. Remote Pairing File")
+                    Text("2. Pairing File")
                 } footer: {
-                    Text("Import the Remote Pairing file generated for the other iPhone. It does not need to match this controller iPhone. Importing a file does not start a connection.")
+                    Text("Import the other iPhone's pairing file: Lockdown for iOS 16, Remote Pairing for iOS 17.4 or later. The format is detected automatically. The file does not need to match this controller iPhone.")
                 }
 
                 Section {
@@ -97,16 +101,21 @@ struct LocationSettingsView: View {
 
                 Section {
                     DisclosureGroup("Advanced Connection Settings") {
-                        LabeledContent("Remote Pairing Port") {
-                            TextField("Automatic", text: $remotePairingPort)
-                                .keyboardType(.numberPad)
-                                .multilineTextAlignment(.trailing)
-                                .focused($focusedField, equals: .port)
-                                .accessibilityLabel("Remote Pairing Port")
+                        if pairingFormat == .lockdown {
+                            Text("iOS 16 uses Lockdown on TCP port 62078. Enable Wi-Fi syncing for the paired iPhone using a computer, then keep both phones on a reachable local network. Remote Pairing port settings are not used.")
+                                .font(.footnote).foregroundStyle(.secondary)
+                        } else {
+                            LabeledContent("Remote Pairing Port") {
+                                TextField("Automatic", text: $remotePairingPort)
+                                    .keyboardType(.numberPad)
+                                    .multilineTextAlignment(.trailing)
+                                    .focused($focusedField, equals: .port)
+                                    .accessibilityLabel("Remote Pairing Port")
+                            }
+                            .disabled(connectionIsBusy)
+                            Text("Leave empty to discover the port at the entered address. If discovery fails, port 49152 is tried. Enter the remote iPhone's actual port if needed.")
+                                .font(.footnote).foregroundStyle(.secondary)
                         }
-                        .disabled(connectionIsBusy)
-                        Text("Leave empty to discover the port at the entered address. If discovery fails, port 49152 is tried. Enter the remote iPhone's actual port if needed.")
-                            .font(.footnote).foregroundStyle(.secondary)
                     }
                     DisclosureGroup("Background Activity") {
                         Toggle("Keep Alive with Audio", isOn: $keepAliveAudio)
@@ -129,6 +138,7 @@ struct LocationSettingsView: View {
                 do {
                     let source = try result.get()
                     try PairingFileStore.importFromPicker(source)
+                    pairingFormat = try PairingFileFormat.detect(at: PairingFileStore.prepareURL())
                     pairingExists = true
                     pairingName = source.lastPathComponent
                     UserDefaults.standard.set(pairingName, forKey: "ImportedRemotePairingName")
@@ -154,7 +164,7 @@ struct LocationSettingsView: View {
             return
         }
         guard pairingExists else {
-            errorMessage = "Import the remote iPhone's Remote Pairing file first."
+            errorMessage = "Import the remote iPhone's pairing file first."
             return
         }
         UserDefaults.standard.set(address, forKey: DeviceConnectionContext.targetAddressKey)

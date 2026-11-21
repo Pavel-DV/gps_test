@@ -26,7 +26,9 @@ func checkMountStatus() -> MountCheckResult {
 
 func mountDeveloperDiskImage(from directoryPath: String) -> String? {
     do {
-        if DeveloperDiskImageService.usesCryptexDDI {
+        if let legacy = DeviceTunnelContext.shared.legacyConnection {
+            try legacy.mountImage(from: URL(fileURLWithPath: directoryPath))
+        } else if DeveloperDiskImageService.usesCryptexDDI {
             try DeviceTunnelContext.shared.installCryptexDDI(from: directoryPath)
         } else {
             try DeviceTunnelContext.shared.mountPersonalDDI(

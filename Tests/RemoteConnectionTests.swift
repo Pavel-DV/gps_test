@@ -4,6 +4,7 @@ import Darwin
 @main
 struct RemoteConnectionTests {
     static func main() {
+        checkPairingFormats()
         let defaults = UserDefaults.standard
         let key = DeviceConnectionContext.targetAddressKey
         let previous = defaults.object(forKey: key)
@@ -41,6 +42,32 @@ struct RemoteConnectionTests {
         expect(annotated.userInfo["ConnectionTargetIP"] as? String == "192.0.2.25", "Preserve the selected remote endpoint")
         expect(annotated.userInfo["ConnectionPort"] as? Int == 50123, "Preserve the attempted port")
         print("Remote connection regression checks passed")
+    }
+
+    private static func checkPairingFormats() {
+        // Synthetic schemas only; no real certificates or device identifiers in tests.
+        let lockdown: [String: Any] = ["HostID": "test-host", "SystemBUID": "test-system", "HostCertificate": Data([1]), "HostPrivateKey": Data([2])]
+        let remote: [String: Any] = ["public_key": Data([1]), "private_key": Data([2]), "identifier": "test-peer"]
+        do {
+            for serialization in [PropertyListSerialization.PropertyListFormat.xml, .binary] {
+                let legacyData = try PropertyListSerialization.data(fromPropertyList: lockdown, format: serialization, options: 0)
+                let remoteData = try PropertyListSerialization.data(fromPropertyList: remote, format: serialization, options: 0)
+                expect(tryFormat(legacyData) == .lockdown, "Lockdown files do not require public_key")
+                expect(tryFormat(remoteData) == .remotePairing, "Remote Pairing uses its own schema")
+            }
+            let incomplete = try PropertyListSerialization.data(fromPropertyList: ["HostID": "test"], format: .xml, options: 0)
+            expect(tryFormat(incomplete) == nil, "Incomplete schemas must not start a connection")
+            expect(tryFormat(Data("not a plist".utf8)) == nil, "Malformed files must be rejected")
+            let legacyInfo = try RemoteDeviceInfo(productVersion: "16.7.12", productType: "iPhone10,6")
+            expect(legacyInfo.legacyImageVersion == "16.7", "Choose DDI from target major/minor, not controller version or target patch")
+            expect(legacyInfo.version.majorVersion == 16, "Remote iOS version remains distinct from controller")
+            expect(legacyInfo.productType == "iPhone10,6", "Retain the actual remote model identifier")
+            expect((try? RemoteDeviceInfo(productVersion: "16.bad.1", productType: "test"))?.productVersion == nil, "Reject malformed target versions")
+        } catch { fatalError("Pairing schema test setup failed: \(error)") }
+    }
+
+    private static func tryFormat(_ data: Data) -> PairingFileFormat? {
+        try? PairingFileFormat.detect(data: data)
     }
 
     private static func checkControllerInterfaces() {

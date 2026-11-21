@@ -2,7 +2,7 @@ import Foundation
 import Darwin
 import idevice
 
-private enum IdeviceBridge {
+enum IdeviceBridge {
 
     static func makeError(
         domain: String = "StikDebug",
@@ -122,37 +122,36 @@ private enum IdeviceBridge {
     }
 }
 
+extension IdeviceBridge {
+    static func readDeviceInfo(client: OpaquePointer) throws -> RemoteDeviceInfo {
+        func stringValue(_ key: String) throws -> String {
+            var value: plist_t?
+            defer { plist_free(value) }
+            let error = key.withCString { lockdownd_get_value(client, $0, nil, &value) }
+            if let error { throw consumeFFIError(error, fallback: "Failed to read remote \(key)") }
+            guard let value, let result = string(from: plist_get_string_ptr(value, nil)) else {
+                throw makeError(message: "Remote \(key) was not returned")
+            }
+            return result
+        }
+        return try RemoteDeviceInfo(productVersion: stringValue("ProductVersion"), productType: stringValue("ProductType"))
+    }
+}
+
 extension DeviceTunnelContext {
-    func readTargetVersion() throws -> OperatingSystemVersion {
+    func readTargetInfo() throws -> RemoteDeviceInfo {
         try IdeviceBridge.withTunnelHandles(for: self) { adapter, handshake in
             try IdeviceBridge.withConnectedClient(
                 fallback: "Failed to connect to target lockdownd",
                 missingClientMessage: "Lockdownd client was not created",
-                connect: { lockdownd_connect_rsd(adapter, handshake, $0) },
-                cleanup: { lockdownd_client_free($0) }
-            ) { client in
-                var value: plist_t?
-                defer { plist_free(value) }
-                if let error = lockdownd_get_value(client, "ProductVersion", nil, &value) {
-                    throw IdeviceBridge.consumeFFIError(error, fallback: "Failed to read target iOS version")
-                }
-                guard let value,
-                      let string = IdeviceBridge.string(from: plist_get_string_ptr(value, nil)) else {
-                    throw IdeviceBridge.makeError(message: "Target iOS version was not returned")
-                }
-                let parts = string.split(separator: ".")
-                guard let first = parts.first, let major = Int(first), major > 0,
-                      parts.count >= 2, let minor = Int(parts[1]) else {
-                    throw IdeviceBridge.makeError(message: "Invalid target iOS version: \(string)")
-                }
-                return OperatingSystemVersion(majorVersion: major, minorVersion: minor,
-                                              patchVersion: parts.count > 2 ? Int(parts[2]) ?? 0 : 0)
-            }
+                connect: { lockdownd_connect_rsd(adapter, handshake, $0) }, cleanup: { lockdownd_client_free($0) }
+            ) { try IdeviceBridge.readDeviceInfo(client: $0) }
         }
     }
 
     func isDeveloperDiskImageMounted() throws -> Bool {
-        try IdeviceBridge.withTunnelHandles(for: self) { adapter, handshake in
+        if let legacyConnection { return try legacyConnection.isImageMounted() }
+        return try IdeviceBridge.withTunnelHandles(for: self) { adapter, handshake in
             var cryptexQuerySucceeded = false
             var cryptexQueryError: NSError?
             if DeveloperDiskImageService.usesCryptexDDI {
@@ -314,9 +313,47 @@ enum LocationSimulationCommandQueue {
     static let shared = DispatchQueue(label: "com.stik.location-sim", qos: .userInitiated)
 }
 
+private enum LegacyLocationState {
+    static var connection: LegacyDeviceConnection?
+    static var client: OpaquePointer?
+
+    static func cleanup() {
+        if let client { lockdown_location_simulation_free(client) }
+        client = nil
+        connection = nil
+    }
+
+    static func set(deviceIP: String, latitude: Double, longitude: Double, pairingFile: String) -> Int32 {
+        do {
+            if client == nil {
+                let newConnection = try LegacyDeviceConnection(targetIP: deviceIP, pairingURL: URL(fileURLWithPath: pairingFile))
+                let newClient = try IdeviceBridge.connectClient(
+                    fallback: "Failed to connect to remote iOS 16 location service",
+                    missingClientMessage: "iOS 16 location service was not created",
+                    connect: { lockdown_location_simulation_connect(newConnection.provider, $0) }
+                )
+                connection = newConnection
+                client = newClient
+            }
+            let error = String(latitude).withCString { lat in
+                String(longitude).withCString { lon in lockdown_location_simulation_set(client, lat, lon) }
+            }
+            if let error { throw IdeviceBridge.consumeFFIError(error, fallback: "Failed to set remote iOS 16 location") }
+            return LocationSimulationStatus.ok
+        } catch {
+            LogManager.shared.addErrorLog(error.localizedDescription)
+            cleanup()
+            return LocationSimulationStatus.locationSet
+        }
+    }
+}
+
 func simulate_location(_ deviceIP: String, _ latitude: Double, _ longitude: Double, _ pairingFile: String) -> Int32 {
     guard DeviceConnectionContext.validationMessage(for: deviceIP) == nil else {
         return LocationSimulationStatus.invalidIP
+    }
+    if DeviceTunnelContext.shared.legacyConnection != nil {
+        return LegacyLocationState.set(deviceIP: deviceIP, latitude: latitude, longitude: longitude, pairingFile: pairingFile)
     }
     if let locationSimulation = LocationSimulationState.locationSimulation {
         if let ffiError = location_simulation_set(locationSimulation, latitude, longitude) {
@@ -409,6 +446,27 @@ func simulate_location(_ deviceIP: String, _ latitude: Double, _ longitude: Doub
 }
 
 func clear_simulated_location() -> Int32 {
+    if let legacy = DeviceTunnelContext.shared.legacyConnection {
+        do {
+            if LegacyLocationState.client == nil {
+                LegacyLocationState.client = try IdeviceBridge.connectClient(
+                    fallback: "Failed to reconnect to clear remote iOS 16 location",
+                    missingClientMessage: "iOS 16 location service was not created",
+                    connect: { lockdown_location_simulation_connect(legacy.provider, $0) }
+                )
+                LegacyLocationState.connection = legacy
+            }
+            if let error = lockdown_location_simulation_clear(LegacyLocationState.client) {
+                throw IdeviceBridge.consumeFFIError(error, fallback: "Failed to clear remote iOS 16 location")
+            }
+            LegacyLocationState.cleanup()
+            return LocationSimulationStatus.ok
+        } catch {
+            LogManager.shared.addErrorLog(error.localizedDescription)
+            LegacyLocationState.cleanup()
+            return LocationSimulationStatus.locationClear
+        }
+    }
     guard let locationSimulation = LocationSimulationState.locationSimulation else {
         return LocationSimulationStatus.locationClear
     }

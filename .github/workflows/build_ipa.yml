@@ -22,6 +22,7 @@ jobs:
           MACOSX_DEPLOYMENT_TARGET=14.0 swiftc -parse-as-library \
             StikDebug/Device/DeviceConnectionContext.swift \
             StikDebug/Services/ConnectionDiagnostics.swift \
+            StikDebug/Support/PairingFileFormat.swift \
             Tests/RemoteConnectionTests.swift \
             -o build/remote-connection-tests
           build/remote-connection-tests

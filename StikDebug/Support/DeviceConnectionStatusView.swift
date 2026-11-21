@@ -36,6 +36,8 @@ struct DeviceConnectionStatusView: View {
                     Text("Remote iPhone: \(target)")
                         .font(.caption.monospaced()).textSelection(.enabled)
                 }
+                Text(tunnel.remoteDeviceDescription ?? "Remote model and iOS: not read (no authenticated connection)")
+                    .font(.caption).foregroundStyle(.secondary)
                 if !isWorking, let diagnosis {
                     Text(diagnosis.message).font(.subheadline)
                 }
@@ -47,7 +49,7 @@ struct DeviceConnectionStatusView: View {
             if !isWorking, let detail = errorDetail {
                 Button {
                     let target = tunnel.connectionTarget ?? "Not selected"
-                    UIPasteboard.general.string = "Remote iPhone: \(target)\n\(detail)\nController diagnostics:\n\(connectionDiagnosticDetails())"
+                    UIPasteboard.general.string = "Remote iPhone address: \(target)\nRemote device: \(tunnel.remoteDeviceDescription ?? "Not read; connection did not complete")\n\(detail)\nController diagnostics (this phone, not the remote iPhone):\n\(connectionDiagnosticDetails())"
                     didCopy = true
                 } label: {
                     Image(systemName: didCopy ? "checkmark" : "doc.on.doc")

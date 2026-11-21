@@ -10,6 +10,7 @@ final class TunnelManager: ObservableObject {
     @Published private(set) var lastError: NSError?
     @Published private(set) var lastDiagnosis: ConnectionDiagnosis?
     @Published private(set) var connectionTarget: String?
+    @Published private(set) var remoteDeviceDescription: String?
 
     private init() {}
 
@@ -19,6 +20,7 @@ final class TunnelManager: ObservableObject {
               !LocationSimulationSession.shared.preventsConnectionChanges else { return }
         isConnected = false
         connectionTarget = nil
+        remoteDeviceDescription = nil
         lastError = nil
         lastDiagnosis = nil
         MountingProgress.shared.reset()
@@ -58,6 +60,9 @@ final class TunnelManager: ObservableObject {
         case .success:
             lastError = nil
             lastDiagnosis = nil
+            if let info = DeviceTunnelContext.shared.targetInfo {
+                remoteDeviceDescription = "\(DeviceModelName.name(for: info.productType)) - iOS \(info.productVersion)"
+            }
             isConnected = true
             LogManager.shared.addInfoLog("Connected to remote iPhone at \(targetIP)")
             MountingProgress.shared.pubMount()
@@ -80,8 +85,8 @@ func connectionDiagnosticDetails() -> String {
     }
 
     return """
-    \(version)
-    \(UIDevice.current.systemName) \(UIDevice.current.systemVersion)
-    \(DeviceModelName.name(for: model))
+    Controller app version: \(version)
+    Controller OS: \(UIDevice.current.systemName) \(UIDevice.current.systemVersion)
+    Controller model: \(DeviceModelName.name(for: model))
     """
 }

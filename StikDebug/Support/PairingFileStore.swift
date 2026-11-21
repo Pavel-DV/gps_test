@@ -72,6 +72,7 @@ enum PairingFileStore {
             throw CocoaError(.fileNoSuchFile)
         }
 
+        _ = try PairingFileFormat.detect(at: sourceURL)
         try replace(with: sourceURL, fileManager: fileManager)
     }
 

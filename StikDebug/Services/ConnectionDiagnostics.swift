@@ -39,9 +39,9 @@ struct ConnectionDiagnosis: Equatable {
     var message: String {
         switch problem {
         case .pairingFile:
-            return "Import a Remote Pairing file for the remote iPhone. An ordinary lockdown pairing record is not supported. The file does not need to match the controller iPhone."
+            return "Import the target iPhone's pairing record: Lockdown for iOS 16, Remote Pairing for iOS 17.4 or later. The file does not need to match the controller iPhone."
         case .pairingRejected:
-            return "Check the remote iPhone's address and use the Remote Pairing file created for that phone. This is a response from the selected remote device; the file is not checked against the controller iPhone."
+            return "Check the remote iPhone's address and use the pairing file created for that phone. This is a response from the selected remote device; the file is not checked against the controller iPhone."
         case .invalidAddress:
             return "Enter the other iPhone's Wi-Fi IPv4 address in Remote iPhone settings."
         case .deviceLocked:
@@ -53,7 +53,7 @@ struct ConnectionDiagnosis: Equatable {
         case .connectionInterrupted:
             return "The selected remote endpoint closed the connection. Check its address and Remote Pairing port, unlock the remote iPhone and retry. This error alone does not mean the pairing file was rejected."
         case .serviceUnreachable:
-            return "Check the remote iPhone's address and Remote Pairing port. Both phones must be on a network that lets them reach each other."
+            return "Check the remote iPhone's address and network access. iOS 16 uses Lockdown port 62078 and requires Wi-Fi syncing enabled for the paired device. Remote Pairing targets use the configured or discovered port."
         case .connectionRefused:
             return "The remote endpoint refused the connection. Check the Remote Pairing port and keep the remote iPhone unlocked."
         case .unknown:

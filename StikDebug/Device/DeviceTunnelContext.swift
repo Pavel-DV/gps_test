@@ -141,6 +141,8 @@ final class DeviceTunnelContext {
     private var adapter: OpaquePointer?
     private var handshake: OpaquePointer?
     private(set) var targetVersion: OperatingSystemVersion?
+    private(set) var targetInfo: RemoteDeviceInfo?
+    private(set) var legacyConnection: LegacyDeviceConnection?
 
     private let tunnelLock = NSLock()
     private var tunnelConnecting = false
@@ -320,6 +322,36 @@ final class DeviceTunnelContext {
         }
 
         do {
+            // Connection settings cannot change during mounting or simulation.
+            if let handshake { rsd_handshake_free(handshake) }
+            if let adapter { adapter_free(adapter) }
+            handshake = nil
+            adapter = nil
+            legacyConnection = nil
+            targetVersion = nil
+            targetInfo = nil
+            let targetIP = DeviceConnectionContext.targetIPAddress
+            let format: PairingFileFormat
+            do {
+                format = try PairingFileFormat.detect(at: PairingFileStore.prepareURL())
+            } catch {
+                throw ConnectionDiagnostics.annotate(error as NSError, stage: .pairingFile, targetIP: targetIP)
+            }
+            if format == .lockdown {
+                do {
+                    let connection = try LegacyDeviceConnection(targetIP: targetIP, pairingURL: PairingFileStore.prepareURL())
+                    let info = try connection.readDeviceInfo()
+                    guard info.version.majorVersion == 16 else {
+                        throw makeError("Lockdown location simulation in this build requires an iOS 16 target. For iOS 17.4 or later, import its Remote Pairing record.")
+                    }
+                    legacyConnection = connection
+                    targetInfo = info
+                    targetVersion = info.version
+                    return
+                } catch {
+                    throw ConnectionDiagnostics.annotate(error as NSError, stage: .tunnel, targetIP: targetIP, port: 62078)
+                }
+            }
             let newTunnel = try createTunnel(hostname: "StikDebug")
             newAdapter = newTunnel.adapter
             newHandshake = newTunnel.handshake
@@ -339,7 +371,9 @@ final class DeviceTunnelContext {
         handshake = newHandshake
         targetVersion = nil
         do {
-            targetVersion = try readTargetVersion()
+            let info = try readTargetInfo()
+            targetInfo = info
+            targetVersion = info.version
         } catch {
             if let handshake { rsd_handshake_free(handshake) }
             if let adapter { adapter_free(adapter) }
@@ -351,7 +385,7 @@ final class DeviceTunnelContext {
     }
 
     func ensureTunnel() throws {
-        if adapter == nil || handshake == nil {
+        if legacyConnection == nil && (adapter == nil || handshake == nil) {
             try startTunnel()
         }
     }

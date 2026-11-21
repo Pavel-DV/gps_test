@@ -1,6 +1,7 @@
 enum DeviceModelName {
     static func name(for identifier: String) -> String {
         switch identifier {
+        case "iPhone10,3", "iPhone10,6": return "iPhone X"
         case "iPhone11,2": return "iPhone XS"
         case "iPhone11,4", "iPhone11,6": return "iPhone XS Max"
         case "iPhone11,8": return "iPhone XR"

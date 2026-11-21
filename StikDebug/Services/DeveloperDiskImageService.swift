@@ -7,12 +7,18 @@ import Foundation
 
 final class DeveloperDiskImageService {
     static let shared = DeveloperDiskImageService()
-    static let directoryURL = URL.documentsDirectory.appendingPathComponent("DDI", isDirectory: true)
+    static var directoryURL: URL {
+        let root = URL.documentsDirectory.appendingPathComponent("DDI", isDirectory: true)
+        if let info = DeviceTunnelContext.shared.targetInfo, info.version.majorVersion == 16 {
+            return root.appendingPathComponent("Legacy-\(info.legacyImageVersion)", isDirectory: true)
+        }
+        return root
+    }
 
     static var filesAreReady: Bool {
         DeviceTunnelContext.shared.targetVersion != nil && downloadItems.allSatisfy {
             FileManager.default.fileExists(atPath: directoryURL.appendingPathComponent($0.fileName).path)
-        } && UserDefaults.standard.string(forKey: mountMethodKey) == mountMethod.rawValue
+        } && UserDefaults.standard.string(forKey: mountMethodKey) == cacheKey
     }
 
     static var usesCryptexDDI: Bool {
@@ -31,6 +37,9 @@ final class DeveloperDiskImageService {
 
     @MainActor
     func downloadMissingFiles() async throws {
+        guard DeviceTunnelContext.shared.targetInfo != nil else {
+            throw NSError(domain: "StikDebug", code: -20, userInfo: [NSLocalizedDescriptionKey: "Connect to the remote iPhone before downloading its developer image."])
+        }
         if let downloadTask {
             try await downloadTask.value
             return
@@ -44,7 +53,7 @@ final class DeveloperDiskImageService {
     private func downloadFiles() async throws {
         let installedMethod = UserDefaults.standard.string(forKey: Self.mountMethodKey)
             ?? (try? String(contentsOf: Self.mountMethodURL, encoding: .utf8))
-        let replaceFiles = installedMethod != Self.mountMethod.rawValue
+        let replaceFiles = installedMethod != Self.cacheKey
         try removeObsoleteFiles()
         if replaceFiles {
             UserDefaults.standard.removeObject(forKey: Self.mountMethodKey)
@@ -61,7 +70,7 @@ final class DeveloperDiskImageService {
             }
             try await downloadFile(from: item.urlString, to: destinationURL)
         }
-        UserDefaults.standard.set(Self.mountMethod.rawValue, forKey: Self.mountMethodKey)
+        UserDefaults.standard.set(Self.cacheKey, forKey: Self.mountMethodKey)
     }
 
     func downloadFile(from urlString: String, to destinationURL: URL) async throws {
@@ -109,17 +118,31 @@ final class DeveloperDiskImageService {
     private static var mountMethod: DDIMountMethod {
         // The controller and target may run different iOS releases.
         guard let version = DeviceTunnelContext.shared.targetVersion else { return .personalized }
+        if version.majorVersion == 16 { return .legacy }
         return version.majorVersion > 26 || (version.majorVersion == 26 && version.minorVersion >= 4)
             ? .cryptex
             : .personalized
     }
 
+    private static var cacheKey: String {
+        if mountMethod == .legacy, let info = DeviceTunnelContext.shared.targetInfo {
+            return "legacy-\(info.legacyImageVersion)"
+        }
+        return mountMethod.rawValue
+    }
+
     private static let mountMethodKey = "DDIMountMethod"
-    private static let mountMethodURL = directoryURL.appendingPathComponent("MountMethod")
+    private static var mountMethodURL: URL { directoryURL.appendingPathComponent("MountMethod") }
     private static let cryptexOnlyFileNames = ["Image.dmg.cryptex_info", "Image.dmg.root_hash"]
 
     private static var downloadItems: [DDIDownloadItem] {
         switch mountMethod {
+        case .legacy:
+            guard let info = DeviceTunnelContext.shared.targetInfo else { return [] }
+            let root = "https://raw.githubusercontent.com/doronz88/DeveloperDiskImage/main/DeveloperDiskImages/\(info.legacyImageVersion)"
+            return ["DeveloperDiskImage.dmg", "DeveloperDiskImage.dmg.signature"].map {
+                DDIDownloadItem(fileName: $0, urlString: "\(root)/\($0)")
+            }
         case .cryptex:
             return cryptexDownloadItems
         case .personalized:
@@ -167,6 +190,7 @@ final class DeveloperDiskImageService {
 }
 
 private enum DDIMountMethod: String {
+    case legacy
     case cryptex
     case personalized
 }
