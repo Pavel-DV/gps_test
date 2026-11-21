@@ -326,50 +326,48 @@ enum LocationSimulationCommandQueue {
     }
 }
 
-private enum LegacyLocationState {
-    static var connection: LegacyDeviceConnection?
-    static var client: OpaquePointer?
-
-    static func cleanup() {
-        if let client { lockdown_location_simulation_free(client) }
-        client = nil
-        connection = nil
-    }
-
-    static func connectIfNeeded(to legacy: LegacyDeviceConnection) throws {
-        try legacy.ensureHeartbeat()
-        if let connection, connection !== legacy { cleanup() }
-        guard client == nil else { return }
-        client = try IdeviceBridge.connectClient(
-            fallback: "Failed to connect to remote iOS 16 location service",
-            missingClientMessage: "iOS 16 location service was not created",
-            connect: { lockdown_location_simulation_connect(legacy.provider, $0) }
-        )
-        connection = legacy
-    }
-
+private enum LegacyLocationCommands {
     static func set(deviceIP: String, latitude: Double, longitude: Double) -> Int32 {
         do {
             guard let legacy = DeviceTunnelContext.shared.legacyConnection,
                   legacy.targetIP == deviceIP else {
                 throw IdeviceBridge.makeError(message: "The selected legacy target is not connected")
             }
-            try legacy.ensureHeartbeat()
-            try LocationCommandRecovery.run(operation: {
-                try connectIfNeeded(to: legacy)
-                let error = String(latitude).withCString { lat in
-                    String(longitude).withCString { lon in lockdown_location_simulation_set(client, lat, lon) }
+            try LocationCommandRecovery.withFreshConnection(
+                open: { try legacy.openLocationCommand() },
+                close: { $0.close() },
+                operation: { command in
+                    try legacy.ensureHeartbeat()
+                    let error = String(latitude).withCString { lat in
+                        String(longitude).withCString { lon in lockdown_location_simulation_set(command.client, lat, lon) }
+                    }
+                    if let error { throw IdeviceBridge.consumeFFIError(error, fallback: "Failed to send remote iOS 16 location") }
                 }
-                if let error { throw IdeviceBridge.consumeFFIError(error, fallback: "Failed to set remote iOS 16 location") }
-            }, reset: {
-                LogManager.shared.addInfoLog("Reopening stale iOS 16 location service; retrying the same coordinate once")
-                cleanup()
-            })
+            )
+            // This protocol does not return a GPS/application acknowledgement.
             return LocationSimulationStatus.ok
         } catch {
             LocationSimulationCommandQueue.recordFailure(error)
-            cleanup()
             return LocationSimulationStatus.locationSet
+        }
+    }
+
+    static func clear(on legacy: LegacyDeviceConnection) -> Int32 {
+        do {
+            try LocationCommandRecovery.withFreshConnection(
+                open: { try legacy.openLocationCommand() },
+                close: { $0.close() },
+                operation: { command in
+                    try legacy.ensureHeartbeat()
+                    if let error = lockdown_location_simulation_clear(command.client) {
+                        throw IdeviceBridge.consumeFFIError(error, fallback: "Failed to send remote iOS 16 location clear")
+                    }
+                }
+            )
+            return LocationSimulationStatus.ok
+        } catch {
+            LocationSimulationCommandQueue.recordFailure(error)
+            return LocationSimulationStatus.locationClear
         }
     }
 }
@@ -381,7 +379,7 @@ func simulate_location(_ deviceIP: String, _ latitude: Double, _ longitude: Doub
         return LocationSimulationStatus.invalidIP
     }
     if DeviceTunnelContext.shared.legacyConnection != nil {
-        return LegacyLocationState.set(deviceIP: deviceIP, latitude: latitude, longitude: longitude)
+        return LegacyLocationCommands.set(deviceIP: deviceIP, latitude: latitude, longitude: longitude)
     }
     if let locationSimulation = LocationSimulationState.locationSimulation {
         if let ffiError = location_simulation_set(locationSimulation, latitude, longitude) {
@@ -477,24 +475,7 @@ func simulate_location(_ deviceIP: String, _ latitude: Double, _ longitude: Doub
 func clear_simulated_location() -> Int32 {
     LocationSimulationCommandQueue.beginCommand()
     if let legacy = DeviceTunnelContext.shared.legacyConnection {
-        do {
-            try legacy.ensureHeartbeat()
-            try LocationCommandRecovery.run(operation: {
-                try LegacyLocationState.connectIfNeeded(to: legacy)
-                if let error = lockdown_location_simulation_clear(LegacyLocationState.client) {
-                    throw IdeviceBridge.consumeFFIError(error, fallback: "Failed to clear remote iOS 16 location")
-                }
-            }, reset: {
-                LogManager.shared.addInfoLog("Reopening stale iOS 16 location service; retrying clear once")
-                LegacyLocationState.cleanup()
-            })
-            LegacyLocationState.cleanup()
-            return LocationSimulationStatus.ok
-        } catch {
-            LocationSimulationCommandQueue.recordFailure(error)
-            LegacyLocationState.cleanup()
-            return LocationSimulationStatus.locationClear
-        }
+        return LegacyLocationCommands.clear(on: legacy)
     }
     guard let locationSimulation = LocationSimulationState.locationSimulation else {
         return LocationSimulationStatus.locationClear

@@ -51,8 +51,56 @@ struct LocationCommandRecoveryTests {
             expect(LocationCommandRecovery.isTransientConnectionError(NSError(domain: "Test", code: 1,
                    userInfo: [NSLocalizedDescriptionKey: detail])), "Recognize wrapped transient socket errors")
         }
+        try checkOneCommandPerConnection()
         checkQueuedResends()
         print("Location command recovery and resend checks passed")
+    }
+
+    private static func checkOneCommandPerConnection() throws {
+        final class OneShotClient {
+            var used = false
+            var closed = false
+        }
+        var opened: [OneShotClient] = []
+        var applied: [Int] = []
+        func open() -> OneShotClient {
+            let client = OneShotClient()
+            opened.append(client)
+            return client
+        }
+        // Model the actual failure: a second write to a consumed connection returns
+        // without throwing, but no second command is applied by the peer.
+        func send(_ value: Int, on client: OneShotClient) {
+            expect(!client.closed, "A command must never use a closed resource")
+            if client.used { return }
+            client.used = true
+            applied.append(value)
+        }
+        for point in [1, 2, 3] {
+            try LocationCommandRecovery.withFreshConnection(open: open, close: { $0.closed = true }, operation: { send(point, on: $0) })
+        }
+        expect(applied == [1, 2, 3], "Consecutive successful writes must reach separate one-command connections")
+        expect(opened.count == 3 && opened.allSatisfy({ $0.closed }), "Close each successful command instead of caching its client")
+
+        opened = []
+        var attempts = 0
+        try LocationCommandRecovery.withFreshConnection(open: open, close: { $0.closed = true }, operation: { client in
+            attempts += 1
+            if attempts == 1 { throw NSError(domain: NSPOSIXErrorDomain, code: Int(EPIPE)) }
+            expect(opened.count == 2 && opened[0].closed, "Release the failed client before opening a retry")
+            send(4, on: client)
+        })
+        expect(attempts == 2 && opened.allSatisfy({ $0.closed }), "Every retry owns and releases a new connection")
+        expect(applied.last == 4, "A retried command must still apply the requested point")
+
+        opened = []
+        let permanent = NSError(domain: "Test", code: 1, userInfo: [NSLocalizedDescriptionKey: "DeveloperModeNotEnabled"])
+        do {
+            try LocationCommandRecovery.withFreshConnection(open: open, close: { $0.closed = true }, operation: { (_: OneShotClient) throws -> Void in throw permanent })
+            fatalError("Do not swallow a permanent command failure")
+        } catch let error as NSError {
+            expect(error === permanent && opened.count == 1 && opened[0].closed, "Release permanent failures without retrying")
+        }
     }
 
     private static func checkQueuedResends() {

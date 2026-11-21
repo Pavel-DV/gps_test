@@ -1,7 +1,7 @@
 import Foundation
 import Darwin
 
-/// Setting an absolute coordinate and clearing it are idempotent. Retry once on a stale socket.
+/// Setting an absolute coordinate and clearing it are idempotent. Retry once on a transport failure.
 enum LocationCommandRecovery {
     static func run<Value>(operation: () throws -> Value, reset: () -> Void) throws -> Value {
         do {
@@ -11,6 +11,20 @@ enum LocationCommandRecovery {
             reset()
             return try operation()
         }
+    }
+
+    /// Legacy dt.simulatelocation is one command per connection. Never reuse a client,
+    /// even after a successful write: the write has no application-level acknowledgement.
+    static func withFreshConnection<Client, Value>(
+        open: () throws -> Client,
+        close: (Client) -> Void,
+        operation: (Client) throws -> Value
+    ) throws -> Value {
+        try run(operation: {
+            let client = try open()
+            defer { close(client) }
+            return try operation(client)
+        }, reset: {})
     }
 
     static func isTransientConnectionError(_ error: Error) -> Bool {

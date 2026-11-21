@@ -116,7 +116,7 @@ final class LegacyDeviceConnection {
         var socket: OpaquePointer?
         let connectError = withUnsafePointer(to: &address) { pointer in
             pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) {
-                idevice_new_tcp_socket($0, socklen_t(MemoryLayout<sockaddr_in>.size), "StikDebugImageMounter", &socket)
+                idevice_new_tcp_socket($0, socklen_t(MemoryLayout<sockaddr_in>.size), "StikDebugService", &socket)
             }
         }
         if let connectError { throw IdeviceBridge.consumeFFIError(connectError, fallback: "Remote service TCP connect failed") }
@@ -147,6 +147,25 @@ final class LegacyDeviceConnection {
         if let error { throw IdeviceBridge.consumeFFIError(error, fallback: "Failed to wrap image-mounter socket") }
         guard let mounter else { throw IdeviceBridge.makeError(message: "Image mounter was not created") }
         return mounter
+    }
+
+    /// A dt.simulatelocation client is valid for one command, including a clear.
+    func openLocationCommand() throws -> LegacyLocationCommandConnection {
+        try ensureHeartbeat()
+        let lockdown = try openAuthenticatedLockdown()
+        var transferred = false
+        defer { if !transferred { lockdownd_client_free(lockdown) } }
+        var port: UInt16 = 0
+        var usesTLS = false
+        let socket = try openServiceSocket(lockdown: lockdown, name: "com.apple.dt.simulatelocation", port: &port, usesTLS: &usesTLS)
+        var client: OpaquePointer?
+        // This constructor takes ownership of the service socket on entry.
+        if let error = lockdown_location_simulation_new(socket, &client) {
+            throw IdeviceBridge.consumeFFIError(error, fallback: "Failed to create a fresh iOS 16 location command")
+        }
+        guard let client else { throw IdeviceBridge.makeError(message: "The fresh location client was not created") }
+        transferred = true
+        return LegacyLocationCommandConnection(client: client, lockdown: lockdown)
     }
 
     func withImageMounter<T>(_ body: (OpaquePointer) throws -> T) throws -> T {
@@ -220,4 +239,25 @@ final class LegacyDeviceConnection {
             if let error { throw IdeviceBridge.consumeFFIError(error, fallback: "Failed to mount remote iOS 16 developer image") }
         }
     }
+}
+
+/// Keeps the service's originating Lockdown session alive until its single command is closed.
+final class LegacyLocationCommandConnection {
+    let client: OpaquePointer
+    private let lockdown: OpaquePointer
+    private var isClosed = false
+
+    init(client: OpaquePointer, lockdown: OpaquePointer) {
+        self.client = client
+        self.lockdown = lockdown
+    }
+
+    func close() {
+        guard !isClosed else { return }
+        isClosed = true
+        lockdown_location_simulation_free(client)
+        lockdownd_client_free(lockdown)
+    }
+
+    deinit { close() }
 }

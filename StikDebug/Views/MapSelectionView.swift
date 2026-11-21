@@ -998,13 +998,20 @@ struct LocationSimulationView: View {
                 .font(.footnote.monospaced())
                 .foregroundStyle(.secondary)
 
+            if simulationSession.isActive, let sent = simulationSession.coordinate {
+                Text(String(format: "Last sent: %.6f, %.6f", sent.latitude, sent.longitude))
+                    .font(.caption.monospaced())
+                Text("Coordinates sent. Check the location on the remote iPhone.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+
             HStack(spacing: 12) {
                 Button("Stop", action: clear)
                     .buttonStyle(.bordered)
                     .tint(.red)
                     .disabled(!pairingExists || isBusy || !hasActiveSimulation)
 
-                Button("Simulate Location", action: simulate)
+                Button(isBusy ? "Sending..." : "Simulate Location", action: simulate)
                     .buttonStyle(.borderedProminent)
                     .disabled(!pairingExists || !isReadyToSimulate || isBusy || isLoadingRoute)
 
@@ -1193,7 +1200,19 @@ struct LocationSimulationView: View {
         LocationSimulationSession.shared.startResending(at: coordinate) { token in
             LocationSimulationCommandQueue.shared.async {
                 guard LocationSimulationSession.shared.isCurrentResend(token) else { return }
-                _ = locationUpdateCode(for: coordinate)
+                let code = locationUpdateCode(for: coordinate)
+                let detail = code == 0 ? nil : LocationSimulationCommandQueue.lastFailureDetail
+                if code != 0 {
+                    DispatchQueue.main.async {
+                        guard LocationSimulationSession.shared.isCurrentResend(token) else { return }
+                        LocationSimulationSession.shared.pauseResending()
+                        let summary = "Could not resend the remote location (error \(code))."
+                        alertTitle = "Location Updates Stopped"
+                        alertMessage = detail.map { "\(summary)\n\n\($0)" } ?? summary
+                        connectionErrorMessage = "Code \(code): \(alertMessage)"
+                        showAlert = true
+                    }
+                }
             }
         }
     }
